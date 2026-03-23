@@ -26,6 +26,34 @@
       </div>
     </div>
 
+    <!-- Account Settings -->
+    <div class="mb-6 bg-gray-900 border border-gray-700 rounded-xl p-4">
+      <h2 class="text-sm font-semibold text-gray-300 mb-3">Account</h2>
+      <form @submit.prevent="changePassword()" class="flex items-end gap-3 flex-wrap">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">Current password</label>
+          <input x-model="pw.current" type="password" required
+                 class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-purple-500 w-48">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">New password</label>
+          <input x-model="pw.next" type="password" required minlength="8"
+                 class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-purple-500 w-48">
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">Confirm</label>
+          <input x-model="pw.confirm" type="password" required minlength="8"
+                 class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-purple-500 w-48">
+        </div>
+        <button type="submit" :disabled="pwSaving"
+                class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
+          <span x-show="!pwSaving">Change password</span>
+          <span x-show="pwSaving" class="animate-pulse">...</span>
+        </button>
+      </form>
+      <div x-show="pwMsg" class="mt-2 text-xs" :class="pwOk ? 'text-green-400' : 'text-red-400'" x-text="pwMsg"></div>
+    </div>
+
     <!-- SSH Public Key Banner -->
     <div x-show="sshPublicKey" class="mb-6 bg-gray-900 border border-gray-700 rounded-xl p-4">
       <div class="flex items-center justify-between mb-2">
@@ -259,6 +287,10 @@
         saving: false,
         importing: false,
         importResult: null,
+        pw: { current: '', next: '', confirm: '' },
+        pwSaving: false,
+        pwMsg: '',
+        pwOk: false,
         sshPublicKey: '',
         copyLabel: 'Copiar',
         regenerating: false,
@@ -267,6 +299,38 @@
         async init() {
           await this.loadConnections()
           await this.loadPublicKey()
+        },
+
+        async changePassword() {
+          this.pwMsg = ''
+          if (this.pw.next !== this.pw.confirm) {
+            this.pwMsg = 'Passwords do not match'
+            this.pwOk = false
+            return
+          }
+          if (this.pw.next.length < 8) {
+            this.pwMsg = 'Password must be at least 8 characters'
+            this.pwOk = false
+            return
+          }
+          this.pwSaving = true
+          try {
+            const res = await fetch('/api/auth/password', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ current_password: this.pw.current, new_password: this.pw.next })
+            })
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.error || 'Error')
+            this.pwMsg = 'Password changed successfully'
+            this.pwOk = true
+            this.pw = { current: '', next: '', confirm: '' }
+          } catch (e) {
+            this.pwMsg = e.message
+            this.pwOk = false
+          } finally {
+            this.pwSaving = false
+          }
         },
 
         async loadPublicKey() {
