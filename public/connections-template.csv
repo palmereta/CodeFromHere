@@ -1,0 +1,7 @@
+name,type,host,port,username,auth_method,password,root_path,bucket,region,endpoint,access_key,secret_key,color
+Production Server,sftp,prod.example.com,22,deploy,publickey,,/var/www,,,,,,#22c55e
+Staging Server,sftp,staging.example.com,22,deploy,password,mypassword123,/home/deploy,,,,,,#eab308
+FTP Legacy,ftp,ftp.example.com,21,ftpuser,password,ftppass123,/public_html,,,,,,#6366f1
+FTPS Secure,ftps,ftp.example.com,990,ftpuser,password,ftppass123,/data,,,,,,#3b82f6
+AWS S3 Bucket,s3,,,,,,,my-bucket,us-east-1,,AKIAIOSFODNN7EXAMPLE,wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY,#f97316
+MinIO Storage,s3,,,,,,,minio-data,us-east-1,https://minio.example.com:9000,minioaccesskey,miniosecretkey,#ec4899

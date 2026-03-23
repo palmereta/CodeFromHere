@@ -46,6 +46,38 @@
       </div>
     </div>
 
+    <!-- CSV Import -->
+    <div class="mb-6 bg-gray-900 border border-gray-700 rounded-xl p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-sm font-semibold text-gray-300">Importar conexiones desde CSV</h2>
+      </div>
+      <p class="text-xs text-gray-500 mb-3">
+        Descarga la plantilla CSV, completa con tus servidores, y subi el archivo. Las conexiones con auth_method "publickey" usaran tu clave SSH automaticamente.
+      </p>
+      <div class="flex items-center gap-3 flex-wrap">
+        <a href="/connections-template.csv" download
+           class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm transition-colors inline-flex items-center gap-1">
+          &#x2B07; Descargar plantilla CSV
+        </a>
+        <label class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-medium transition-colors cursor-pointer inline-flex items-center gap-1">
+          <span x-show="!importing">&#x2B06; Importar CSV</span>
+          <span x-show="importing" class="animate-pulse">Importando...</span>
+          <input type="file" accept=".csv" @change="importCSV($event)" class="hidden" :disabled="importing">
+        </label>
+      </div>
+      <div x-show="importResult" class="mt-3 text-sm px-3 py-2 rounded-lg"
+           :class="importResult?.failed === 0 ? 'bg-green-900/30 text-green-400' : 'bg-yellow-900/30 text-yellow-300'">
+        <p x-text="`${importResult?.imported || 0} conexiones importadas, ${importResult?.failed || 0} con errores.`"></p>
+        <template x-if="importResult?.errors?.length > 0">
+          <ul class="mt-2 text-xs text-red-400 space-y-0.5">
+            <template x-for="err in importResult.errors" :key="err.row">
+              <li x-text="`Fila ${err.row}: ${err.error}`"></li>
+            </template>
+          </ul>
+        </template>
+      </div>
+    </div>
+
     <!-- Connection Cards -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <template x-for="conn in connections" :key="conn.id">
@@ -225,6 +257,8 @@
         form: {},
         formError: '',
         saving: false,
+        importing: false,
+        importResult: null,
         sshPublicKey: '',
         copyLabel: 'Copiar',
         regenerating: false,
@@ -361,6 +395,30 @@
             await fetch(`/api/connections/${conn.id}`, { method: 'DELETE' })
             await this.loadConnections()
           } catch (e) { alert(e.message) }
+        },
+
+        async importCSV(event) {
+          const file = event.target.files[0]
+          if (!file) return
+          this.importing = true
+          this.importResult = null
+          try {
+            const formData = new FormData()
+            formData.append('file', file)
+            const res = await fetch('/api/connections/import', {
+              method: 'POST',
+              body: formData
+            })
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.error || 'Error al importar')
+            this.importResult = data
+            if (data.imported > 0) await this.loadConnections()
+          } catch (e) {
+            this.importResult = { imported: 0, failed: 1, errors: [{ row: 0, error: e.message }] }
+          } finally {
+            this.importing = false
+            event.target.value = ''
+          }
         },
 
         loadKeyFile(event) {
