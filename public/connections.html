@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="es" class="dark h-full">
+<head>
+  <meta charset="UTF-8">
+  <title>CodeFromHere — Conexiones</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'class' }</script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-950 text-gray-200 min-h-full">
+
+  <div x-data="connectionsPage()" x-init="init()" class="max-w-4xl mx-auto px-6 py-8">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-8">
+      <div class="flex items-center gap-3">
+        <a href="/" class="text-purple-400 text-2xl font-bold hover:text-purple-300">⬡ CodeFromHere</a>
+        <span class="text-gray-600">/</span>
+        <h1 class="text-lg font-semibold">Conexiones</h1>
+      </div>
+      <div class="flex gap-2">
+        <a href="/" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm transition-colors">← Volver al IDE</a>
+        <button @click="openNewModal()" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-medium transition-colors">
+          + Nueva conexión
+        </button>
+      </div>
+    </div>
+
+    <!-- SSH Public Key Banner -->
+    <div x-show="sshPublicKey" class="mb-6 bg-gray-900 border border-gray-700 rounded-xl p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-sm font-semibold text-gray-300">Tu clave publica SSH</h2>
+        <div class="flex gap-2">
+          <button @click="copyPublicKey()" class="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 rounded transition-colors">
+            <span x-text="copyLabel">Copiar</span>
+          </button>
+          <button @click="regenerateKey()" :disabled="regenerating" class="px-2 py-1 text-xs bg-purple-900/50 hover:bg-purple-800 text-purple-300 rounded transition-colors">
+            <span x-show="!regenerating">Regenerar</span>
+            <span x-show="regenerating" class="animate-pulse">...</span>
+          </button>
+        </div>
+      </div>
+      <p class="text-xs text-gray-500 mb-2">Agrega esta clave en <code class="text-gray-400">~/.ssh/authorized_keys</code> de tus servidores para conectarte sin password.</p>
+      <div class="bg-gray-950 rounded-lg p-3 overflow-x-auto">
+        <code class="text-xs text-green-400 break-all select-all" x-text="sshPublicKey"></code>
+      </div>
+    </div>
+
+    <!-- Connection Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <template x-for="conn in connections" :key="conn.id">
+        <div class="bg-gray-900 border border-gray-700 rounded-xl p-4 hover:border-gray-600 transition-colors">
+          <div class="flex items-start justify-between">
+            <div class="flex items-center gap-3">
+              <div class="w-3 h-3 rounded-full" :style="`background: ${conn.color}`"></div>
+              <div>
+                <h3 class="font-medium" x-text="conn.name"></h3>
+                <p class="text-xs text-gray-500 mt-0.5">
+                  <span x-text="conn.type.toUpperCase()" class="font-mono"></span>
+                  <span x-show="conn.host"> — <span x-text="conn.host"></span><span x-show="conn.port">:<span x-text="conn.port"></span></span></span>
+                  <span x-show="conn.bucket"> — <span x-text="conn.bucket"></span></span>
+                </p>
+              </div>
+            </div>
+            <div class="flex gap-1">
+              <button @click="testConnection(conn)" class="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 rounded transition-colors"
+                      :disabled="conn._testing">
+                <span x-show="!conn._testing">Test</span>
+                <span x-show="conn._testing" class="animate-pulse">...</span>
+              </button>
+              <button @click="editConnection(conn)" class="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 rounded transition-colors">Editar</button>
+              <button @click="deleteConnection(conn)" class="px-2 py-1 text-xs bg-red-900/50 hover:bg-red-800 text-red-300 rounded transition-colors">×</button>
+            </div>
+          </div>
+          <div x-show="conn._testResult" class="mt-3 text-xs px-2 py-1 rounded"
+               :class="conn._testOk ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'"
+               x-text="conn._testResult"></div>
+          <div class="flex items-center justify-between mt-3 pt-3 border-t border-gray-800">
+            <span class="text-xs text-gray-600" x-text="conn.last_connected ? 'Última conexión: ' + new Date(conn.last_connected).toLocaleDateString() : 'Nunca conectado'"></span>
+            <a href="/" class="text-xs text-purple-400 hover:text-purple-300">Abrir IDE →</a>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <div x-show="connections.length === 0" class="text-center py-20 text-gray-600">
+      <div class="text-4xl mb-4">🔌</div>
+      <p>No hay conexiones configuradas</p>
+      <button @click="openNewModal()" class="mt-4 px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm">Crear primera conexión</button>
+    </div>
+
+    <!-- Modal Nueva/Editar Conexión -->
+    <div x-show="modal.visible" class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div class="bg-gray-800 rounded-xl border border-gray-600 shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto"
+           @click.outside="modal.visible = false">
+        <div class="p-6">
+          <h2 class="text-lg font-semibold mb-4" x-text="modal.editing ? 'Editar conexión' : 'Nueva conexión'"></h2>
+
+          <form @submit.prevent="saveConnection()" class="space-y-3">
+            <div>
+              <label class="block text-sm text-gray-400 mb-1">Nombre</label>
+              <input x-model="form.name" required class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500">
+            </div>
+
+            <div>
+              <label class="block text-sm text-gray-400 mb-1">Tipo</label>
+              <select x-model="form.type" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500">
+                <option value="sftp">SFTP (SSH)</option>
+                <option value="ftp">FTP</option>
+                <option value="ftps">FTPS (FTP sobre TLS)</option>
+                <option value="s3">S3 / Compatible</option>
+              </select>
+            </div>
+
+            <!-- SSH/FTP fields -->
+            <template x-if="form.type !== 's3'">
+              <div class="space-y-3">
+                <div class="grid grid-cols-3 gap-2">
+                  <div class="col-span-2">
+                    <label class="block text-sm text-gray-400 mb-1">Host</label>
+                    <input x-model="form.host" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500" placeholder="ejemplo.com">
+                  </div>
+                  <div>
+                    <label class="block text-sm text-gray-400 mb-1">Puerto</label>
+                    <input x-model.number="form.port" type="number" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+                           :placeholder="form.type === 'sftp' ? '22' : form.type === 'ftps' ? '990' : '21'">
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-sm text-gray-400 mb-1">Usuario</label>
+                  <input x-model="form.username" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500">
+                </div>
+                <div>
+                  <label class="block text-sm text-gray-400 mb-1">Password</label>
+                  <input x-model="form.password" type="password" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+                         :placeholder="modal.editing ? '(sin cambios si se deja vacío)' : ''">
+                </div>
+
+                <template x-if="form.type === 'sftp'">
+                  <div class="space-y-3">
+                    <div>
+                      <label class="block text-sm text-gray-400 mb-1">Clave privada (opcional)</label>
+                      <textarea x-model="form.private_key" rows="3" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-purple-500"
+                                placeholder="Pegar contenido de la clave privada..."></textarea>
+                      <input type="file" @change="loadKeyFile($event)" class="mt-1 text-xs text-gray-500">
+                      <p class="text-xs text-gray-500 mt-1">Si dejas password y clave privada vacios, se usara tu clave SSH por defecto (ver arriba).</p>
+                    </div>
+                    <div>
+                      <label class="block text-sm text-gray-400 mb-1">Passphrase (opcional)</label>
+                      <input x-model="form.passphrase" type="password" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500">
+                    </div>
+                  </div>
+                </template>
+
+                <div>
+                  <label class="block text-sm text-gray-400 mb-1">Ruta raíz</label>
+                  <input x-model="form.root_path" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500" placeholder="/">
+                </div>
+              </div>
+            </template>
+
+            <!-- S3 fields -->
+            <template x-if="form.type === 's3'">
+              <div class="space-y-3">
+                <div>
+                  <label class="block text-sm text-gray-400 mb-1">Bucket</label>
+                  <input x-model="form.bucket" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <label class="block text-sm text-gray-400 mb-1">Región</label>
+                    <input x-model="form.region" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500" placeholder="us-east-1">
+                  </div>
+                  <div>
+                    <label class="block text-sm text-gray-400 mb-1">Endpoint (opcional)</label>
+                    <input x-model="form.endpoint" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500" placeholder="https://s3.wasabisys.com">
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-sm text-gray-400 mb-1">Access Key</label>
+                  <input x-model="form.access_key" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500">
+                </div>
+                <div>
+                  <label class="block text-sm text-gray-400 mb-1">Secret Key</label>
+                  <input x-model="form.secret_key" type="password" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+                         :placeholder="modal.editing ? '(sin cambios si se deja vacío)' : ''">
+                </div>
+              </div>
+            </template>
+
+            <!-- Color picker -->
+            <div>
+              <label class="block text-sm text-gray-400 mb-2">Color</label>
+              <div class="flex gap-2">
+                <template x-for="c in colors" :key="c">
+                  <button type="button" @click="form.color = c"
+                          class="w-7 h-7 rounded-full border-2 transition-transform"
+                          :style="`background: ${c}`"
+                          :class="form.color === c ? 'border-white scale-110' : 'border-transparent'">
+                  </button>
+                </template>
+              </div>
+            </div>
+
+            <div x-show="formError" class="text-red-400 text-sm" x-text="formError"></div>
+
+            <div class="flex gap-2 pt-2">
+              <button type="button" @click="modal.visible = false" class="flex-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm transition-colors">Cancelar</button>
+              <button type="submit" :disabled="saving" class="flex-1 px-3 py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
+                <span x-show="!saving" x-text="modal.editing ? 'Guardar cambios' : 'Crear conexión'"></span>
+                <span x-show="saving" class="animate-pulse">Guardando...</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function connectionsPage() {
+      return {
+        connections: [],
+        modal: { visible: false, editing: false },
+        form: {},
+        formError: '',
+        saving: false,
+        sshPublicKey: '',
+        copyLabel: 'Copiar',
+        regenerating: false,
+        colors: ['#6366f1', '#3b82f6', '#22c55e', '#eab308', '#ef4444', '#ec4899', '#f97316', '#6b7280'],
+
+        async init() {
+          await this.loadConnections()
+          await this.loadPublicKey()
+        },
+
+        async loadPublicKey() {
+          try {
+            const res = await fetch('/api/settings/public-key')
+            if (res.ok) {
+              const data = await res.json()
+              this.sshPublicKey = data.public_key || ''
+            }
+          } catch (e) { console.error(e) }
+        },
+
+        async copyPublicKey() {
+          try {
+            await navigator.clipboard.writeText(this.sshPublicKey)
+            this.copyLabel = 'Copiada!'
+            setTimeout(() => { this.copyLabel = 'Copiar' }, 2000)
+          } catch { alert('No se pudo copiar. Selecciona el texto manualmente.') }
+        },
+
+        async regenerateKey() {
+          if (!confirm('Regenerar la clave SSH? Las conexiones que usen la clave actual dejaran de funcionar hasta que actualices authorized_keys en tus servidores.')) return
+          this.regenerating = true
+          try {
+            const res = await fetch('/api/settings/regenerate-key', { method: 'POST' })
+            const data = await res.json()
+            if (res.ok) {
+              this.sshPublicKey = data.public_key
+            } else {
+              alert(data.error || 'Error al regenerar')
+            }
+          } catch (e) { alert(e.message) }
+          finally { this.regenerating = false }
+        },
+
+        resetForm() {
+          this.form = {
+            name: '', type: 'sftp', host: '', port: null, username: '',
+            password: '', private_key: '', passphrase: '', root_path: '/',
+            bucket: '', region: 'us-east-1', endpoint: '', access_key: '', secret_key: '',
+            color: '#6366f1'
+          }
+          this.formError = ''
+        },
+
+        openNewModal() {
+          this.resetForm()
+          this.modal = { visible: true, editing: false }
+        },
+
+        editConnection(conn) {
+          this.form = {
+            id: conn.id,
+            name: conn.name, type: conn.type, host: conn.host || '', port: conn.port,
+            username: conn.username || '', password: '', private_key: '', passphrase: '',
+            root_path: conn.root_path || '/',
+            bucket: conn.bucket || '', region: conn.region || 'us-east-1',
+            endpoint: conn.endpoint || '', access_key: '', secret_key: '',
+            color: conn.color || '#6366f1'
+          }
+          this.formError = ''
+          this.modal = { visible: true, editing: true }
+        },
+
+        async loadConnections() {
+          try {
+            const res = await fetch('/api/connections')
+            if (res.status === 401) { window.location.href = '/login.html'; return }
+            this.connections = await res.json()
+          } catch (e) { console.error(e) }
+        },
+
+        async saveConnection() {
+          this.saving = true
+          this.formError = ''
+          try {
+            const body = { ...this.form }
+            // En edición, no enviar campos de credenciales vacíos
+            if (this.modal.editing) {
+              if (!body.password) delete body.password
+              if (!body.private_key) delete body.private_key
+              if (!body.passphrase) delete body.passphrase
+              if (!body.access_key) delete body.access_key
+              if (!body.secret_key) delete body.secret_key
+            }
+
+            const url = this.modal.editing ? `/api/connections/${body.id}` : '/api/connections'
+            const method = this.modal.editing ? 'PUT' : 'POST'
+
+            const res = await fetch(url, {
+              method,
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body)
+            })
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.error)
+
+            this.modal.visible = false
+            await this.loadConnections()
+          } catch (e) {
+            this.formError = e.message
+          } finally {
+            this.saving = false
+          }
+        },
+
+        async testConnection(conn) {
+          conn._testing = true
+          conn._testResult = ''
+          try {
+            const res = await fetch(`/api/connections/${conn.id}/test`, { method: 'POST' })
+            const data = await res.json()
+            conn._testOk = data.ok
+            conn._testResult = data.ok ? data.message : data.error
+          } catch (e) {
+            conn._testOk = false
+            conn._testResult = e.message
+          } finally {
+            conn._testing = false
+          }
+        },
+
+        async deleteConnection(conn) {
+          if (!confirm(`¿Eliminar la conexión "${conn.name}"?`)) return
+          try {
+            await fetch(`/api/connections/${conn.id}`, { method: 'DELETE' })
+            await this.loadConnections()
+          } catch (e) { alert(e.message) }
+        },
+
+        loadKeyFile(event) {
+          const file = event.target.files[0]
+          if (!file) return
+          const reader = new FileReader()
+          reader.onload = (e) => { this.form.private_key = e.target.result }
+          reader.readAsText(file)
+        }
+      }
+    }
+  </script>
+</body>
+</html>

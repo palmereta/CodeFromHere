@@ -1,0 +1,76 @@
+/* Clases utilitarias del IDE que Tailwind no cubre */
+.ide-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.875rem;
+  color: #9ca3af;
+  border-radius: 0.25rem;
+  transition: all 0.15s;
+  text-decoration: none;
+}
+.ide-btn:hover {
+  color: #e5e7eb;
+  background-color: #374151;
+}
+
+.ide-icon-btn {
+  width: 1.5rem;
+  height: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9ca3af;
+  border-radius: 0.25rem;
+  transition: all 0.15s;
+  font-size: 0.875rem;
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+.ide-icon-btn:hover {
+  color: #f3f4f6;
+  background-color: #374151;
+}
+
+.ctx-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.375rem 1rem;
+  font-size: 0.875rem;
+  color: #e5e7eb;
+  transition: background-color 0.15s;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.ctx-item:hover {
+  background-color: #374151;
+}
+
+.ide-kbd {
+  display: inline-block;
+  background: #374151;
+  border: 1px solid #4b5563;
+  border-radius: 0.25rem;
+  padding: 0.125rem 0.25rem;
+  font-size: 0.75rem;
+  font-family: monospace;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+/* Monaco necesita height explícito */
+#monaco-editor { height: 100%; }
+
+/* xterm fix */
+.xterm-viewport { overflow-y: auto !important; }
+
+/* Tab animations */
+.tab-enter { animation: fadeIn 0.15s ease; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }

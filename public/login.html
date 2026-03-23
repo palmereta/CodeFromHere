@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="es" class="dark h-full">
+<head>
+  <meta charset="UTF-8">
+  <title>CodeFromHere — Login</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'class' }</script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-950 text-gray-200 h-full flex items-center justify-center">
+
+  <div x-data="loginForm()" class="w-full max-w-sm px-6">
+    <div class="text-center mb-8">
+      <div class="text-6xl mb-2">⬡</div>
+      <h1 class="text-2xl font-bold text-purple-400">CodeFromHere</h1>
+      <p class="text-sm text-gray-500 mt-1">Web IDE — Iniciar sesión</p>
+    </div>
+
+    <form @submit.prevent="login()" class="space-y-4">
+      <div>
+        <label class="block text-sm text-gray-400 mb-1">Usuario</label>
+        <input x-model="username" type="text" required autofocus
+               class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+               placeholder="admin">
+      </div>
+      <div>
+        <label class="block text-sm text-gray-400 mb-1">Password</label>
+        <input x-model="password" type="password" required
+               class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-purple-500"
+               placeholder="••••••••">
+      </div>
+
+      <div x-show="error" class="text-red-400 text-sm" x-text="error"></div>
+
+      <button type="submit" :disabled="loading"
+              class="w-full bg-purple-600 hover:bg-purple-500 text-white rounded-lg py-2 text-sm font-medium transition-colors disabled:opacity-50">
+        <span x-show="!loading">Ingresar</span>
+        <span x-show="loading">Conectando...</span>
+      </button>
+    </form>
+
+    <p class="text-center text-xs text-gray-600 mt-6">
+      Usuario por defecto: admin / admin123
+    </p>
+  </div>
+
+  <script>
+    function loginForm() {
+      return {
+        username: '',
+        password: '',
+        loading: false,
+        error: '',
+
+        async login() {
+          this.loading = true
+          this.error = ''
+          try {
+            const res = await fetch('/api/auth/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username: this.username, password: this.password })
+            })
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.error || 'Error de autenticación')
+            window.location.href = '/'
+          } catch (e) {
+            this.error = e.message
+          } finally {
+            this.loading = false
+          }
+        }
+      }
+    }
+  </script>
+</body>
+</html>

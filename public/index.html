@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="es" class="dark h-full">
+<head>
+  <meta charset="UTF-8">
+  <title>CodeFromHere</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class', theme: { extend: {} } }
+  </script>
+
+  <!-- xterm.js -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
+
+  <!-- Monaco Editor -->
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+
+  <!-- Alpine.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+  <!-- Estilos custom -->
+  <link rel="stylesheet" href="/css/ide.css">
+</head>
+
+<body class="bg-gray-950 text-gray-200 h-full overflow-hidden" x-data="ideApp()" x-init="init()">
+
+  <!-- HEADER -->
+  <header class="flex items-center bg-gray-900 border-b border-gray-700 px-4 h-10 flex-shrink-0">
+    <span class="text-purple-400 font-bold text-sm mr-4">&#x2B21; CodeFromHere</span>
+
+    <div class="flex-1"></div>
+
+    <!-- Botones globales -->
+    <button @click="toggleSidebar()" class="ide-btn" title="Toggle sidebar (Ctrl+B)">&#x29C9;</button>
+    <button @click="toggleTerminalPanel()" class="ide-btn" title="Toggle terminal (Ctrl+`)">&#x2328;</button>
+    <!-- Transfer panel -->
+    <div class="relative" @click.outside="transferPanelOpen = false">
+      <button @click="transferPanelOpen = !transferPanelOpen" class="ide-btn relative" title="Transferencias">
+        &#x1F514;
+        <span x-show="activeTransferCount > 0"
+              class="absolute -top-1 -right-1 bg-purple-500 text-white text-[9px] rounded-full w-4 h-4 flex items-center justify-center animate-pulse"
+              x-text="activeTransferCount"></span>
+      </button>
+      <div x-show="transferPanelOpen"
+           x-transition
+           class="absolute right-0 top-full mt-1 w-96 max-h-80 overflow-y-auto bg-gray-800 border border-gray-600 rounded-lg shadow-2xl z-50">
+        <div class="flex items-center justify-between px-3 py-2 border-b border-gray-700">
+          <span class="text-xs font-semibold text-gray-400 uppercase">Transferencias</span>
+          <button @click="clearCompletedTransfers()" class="text-[10px] text-gray-500 hover:text-gray-300">Limpiar</button>
+        </div>
+        <template x-if="transfers.length === 0">
+          <div class="p-4 text-center text-xs text-gray-500">Sin transferencias</div>
+        </template>
+        <template x-for="t in transfers" :key="t.id">
+          <div class="px-3 py-2 border-b border-gray-700/50 text-xs">
+            <div class="flex items-center gap-2">
+              <span x-show="t.status === 'active'" class="animate-spin text-purple-400">&#x21BB;</span>
+              <span x-show="t.status === 'success'" class="text-green-400">&#x2714;</span>
+              <span x-show="t.status === 'error'" class="text-red-400">&#x2718;</span>
+              <span class="font-medium truncate" x-text="t.sourceName"></span>
+              <span class="text-gray-500 flex-shrink-0" x-text="t.type === 'copy' ? 'copiado' : t.type === 'move' ? 'movido' : 'subido'"></span>
+            </div>
+            <div class="text-[10px] text-gray-500 mt-0.5 truncate" x-text="t.sourcePath + ' &#x2192; ' + t.destPath"></div>
+            <div x-show="t.endTime" class="text-[10px] text-gray-600 mt-0.5">
+              <span x-text="new Date(t.endTime).toLocaleTimeString()"></span>
+              <span x-show="t.startTime" x-text="' (' + ((t.endTime - t.startTime) / 1000).toFixed(1) + 's)'"></span>
+            </div>
+            <div x-show="t.error" class="text-[10px] text-red-400 mt-0.5" x-text="t.error"></div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <a href="/connections.html" class="ide-btn" title="Gestionar conexiones">&#x2699;</a>
+    <a href="/api/auth/logout" class="ide-btn" style="color: #f87171" title="Salir">&#x23FB;</a>
+  </header>
+
+  <!-- MAIN LAYOUT -->
+  <div class="flex h-[calc(100vh-2.5rem)] overflow-hidden">
+
+    <!-- SIDEBAR -->
+    <aside x-show="sidebarVisible"
+           x-transition:enter="transition-all duration-150"
+           x-transition:enter-start="opacity-0 -translate-x-2"
+           x-transition:enter-end="opacity-100 translate-x-0"
+           :style="`width: ${sidebarWidth}px; min-width: 180px; max-width: 600px`"
+           class="flex flex-col bg-gray-900 border-r border-gray-700 flex-shrink-0 relative select-none">
+
+      <!-- Toolbar -->
+      <div class="flex items-center gap-1 p-2 border-b border-gray-700 flex-shrink-0">
+        <span class="text-xs text-gray-500 font-semibold uppercase tracking-wider">Conexiones</span>
+        <div class="flex-1"></div>
+        <button @click="newFile()" class="ide-icon-btn" title="Nuevo archivo">+</button>
+        <button @click="newFolder()" class="ide-icon-btn" title="Nueva carpeta">&#x1F4C1;</button>
+        <button @click="showHidden = !showHidden"
+                :class="showHidden ? 'text-purple-400' : 'text-gray-500'"
+                class="ide-icon-btn text-xs" title="Mostrar ocultos">.h</button>
+      </div>
+
+      <!-- Search -->
+      <div class="px-2 py-1 flex-shrink-0">
+        <input x-model="searchQuery"
+               placeholder="Buscar archivos..."
+               class="w-full bg-gray-800 text-xs rounded px-2 py-1 border border-gray-700 focus:outline-none focus:border-purple-500">
+      </div>
+
+      <!-- Tree -->
+      <div class="flex-1 overflow-y-auto">
+        <template x-if="connections.length === 0">
+          <div class="p-4 text-gray-500 text-xs text-center">
+            <p>No hay conexiones</p>
+            <a href="/connections.html" class="text-purple-400 hover:underline">Crear una conexion</a>
+          </div>
+        </template>
+
+        <template x-for="row in flatVisibleTree" :key="row.key">
+          <div class="flex items-center gap-1 pr-2 py-0.5 text-xs hover:bg-gray-800 cursor-pointer group select-none"
+               :style="`padding-left: ${row.depth * 14 + 6}px`"
+               :class="{
+                 'bg-gray-800/80': selectedNodeKey === row.key,
+                 'text-gray-200 font-medium border-b border-gray-800': row.item.isRoot,
+                 'text-blue-300': row.item.isDir && !row.item.isRoot,
+                 'text-gray-400': !row.item.isDir && !row.item.isRoot,
+                 'opacity-50 italic': clipboard?.mode === 'cut' && clipboard?.connectionId === row.item.connectionId && clipboard?.path === row.item.path,
+               }"
+               @click="onTreeNodeClick(row)"
+               @contextmenu.prevent="showTreeContextMenu($event, row)">
+
+            <!-- Expand chevron for dirs/roots -->
+            <span x-show="row.item.isDir || row.item.isRoot"
+                  class="w-4 text-center flex-shrink-0 text-gray-500"
+                  @click.stop="toggleNode(row.key)">
+              <span x-show="row.node?.loading" class="animate-spin inline-block text-[10px]">&#x21BB;</span>
+              <span x-show="!row.node?.loading" x-text="row.node?.expanded ? '&#x25BE;' : '&#x25B8;'" class="text-[10px]"></span>
+            </span>
+            <!-- Spacer for files (align with folder names) -->
+            <span x-show="!row.item.isDir && !row.item.isRoot" class="w-4 flex-shrink-0"></span>
+
+            <!-- Color dot for root connections -->
+            <span x-show="row.item.isRoot" class="w-2 h-2 rounded-full flex-shrink-0" :style="`background:${row.item.color}`"></span>
+
+            <!-- Icon -->
+            <span class="flex-shrink-0" x-text="getTreeIcon(row.item)"></span>
+
+            <!-- Name (or rename input) -->
+            <template x-if="renamingKey !== row.key">
+              <span class="truncate flex-1" x-text="row.item.name"></span>
+            </template>
+            <template x-if="renamingKey === row.key">
+              <input data-rename-input
+                     x-model="renameValue"
+                     @keydown.enter="confirmRename(row.key)"
+                     @keydown.escape="renamingKey = null"
+                     @click.stop
+                     class="flex-1 bg-gray-700 text-xs px-1 rounded border border-purple-500 outline-none">
+            </template>
+
+            <!-- Host subtitle for root -->
+            <span x-show="row.item.isRoot && row.item.host" class="text-[10px] text-gray-600 truncate ml-1" x-text="row.item.host"></span>
+
+            <!-- Size for files -->
+            <span x-show="!row.item.isDir && !row.item.isRoot"
+                  class="text-[10px] text-gray-600 opacity-0 group-hover:opacity-100 flex-shrink-0 ml-1"
+                  x-text="formatSize(row.item.size)"></span>
+          </div>
+        </template>
+      </div>
+
+      <!-- Resize handle -->
+      <div class="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-purple-500 opacity-0 hover:opacity-100 transition-opacity"
+           @mousedown.prevent="startSidebarResize($event)"></div>
+    </aside>
+
+    <!-- EDITOR + TERMINAL AREA -->
+    <div class="flex flex-col flex-1 overflow-hidden">
+
+      <!-- EDITOR TABS -->
+      <div class="flex items-center bg-gray-900 border-b border-gray-700 overflow-x-auto flex-shrink-0 h-9">
+        <template x-for="tab in editorTabs" :key="tab.id">
+          <div class="flex items-center gap-1 px-3 py-1 text-xs border-r border-gray-700 cursor-pointer flex-shrink-0 h-full"
+               :class="activeEditorTab === tab.id
+                 ? 'bg-gray-950 text-white border-t-2 border-t-purple-500'
+                 : 'text-gray-400 hover:bg-gray-800'"
+               @click="activateEditorTab(tab.id)">
+            <span class="text-base" x-text="getFileIcon(tab)"></span>
+            <span x-text="tab.label"></span>
+            <span x-show="tab.dirty" class="text-purple-400 ml-1">&#x25CF;</span>
+            <button @click.stop="closeEditorTab(tab.id)"
+                    class="ml-1 hover:text-red-400 opacity-50 hover:opacity-100">&times;</button>
+          </div>
+        </template>
+
+        <template x-if="editorTabs.length === 0">
+          <div class="flex items-center px-4 text-xs text-gray-600 select-none h-full">
+            Abri un archivo desde el explorador
+          </div>
+        </template>
+      </div>
+
+      <!-- EDITOR AREA -->
+      <div class="flex-1 relative overflow-hidden">
+        <!-- Monaco se monta aqui — sin bindings Alpine, siempre tiene tamanio real -->
+        <div id="monaco-editor" style="position:absolute;top:0;left:0;right:0;bottom:0"></div>
+
+        <!-- Welcome screen — se superpone, desaparece cuando hay tabs -->
+        <div x-show="editorTabs.length === 0"
+             class="absolute inset-0 flex flex-col items-center justify-center text-gray-600 select-none bg-gray-950"
+             style="z-index:50">
+          <div class="text-6xl mb-4 opacity-20">&#x2B21;</div>
+          <p class="text-sm">CodeFromHere</p>
+          <p class="text-xs mt-1">Selecciona una conexion y abri un archivo</p>
+          <div class="mt-6 text-xs space-y-1 text-center">
+            <p><kbd class="ide-kbd">Ctrl+S</kbd> Guardar &nbsp;&nbsp; <kbd class="ide-kbd">Ctrl+W</kbd> Cerrar tab</p>
+            <p><kbd class="ide-kbd">Ctrl+B</kbd> Sidebar &nbsp;&nbsp; <kbd class="ide-kbd">Ctrl+`</kbd> Terminal</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- RESIZE HANDLE TERMINAL -->
+      <div x-show="terminalVisible"
+           class="h-1 cursor-row-resize bg-gray-700 hover:bg-purple-500 flex-shrink-0 transition-colors"
+           @mousedown.prevent="startTerminalResize($event)"></div>
+
+      <!-- TERMINAL PANEL -->
+      <div x-show="terminalVisible"
+           :style="`height: ${terminalHeight}px`"
+           class="flex flex-col bg-gray-950 flex-shrink-0">
+
+        <!-- Terminal tabs -->
+        <div class="flex items-center bg-gray-900 border-t border-gray-700 overflow-x-auto flex-shrink-0 h-8">
+          <template x-for="tab in terminalTabs" :key="tab.id">
+            <div class="flex items-center gap-1 px-3 text-xs border-r border-gray-700 cursor-pointer flex-shrink-0 h-full"
+                 :class="activeTerminalTab === tab.id ? 'bg-gray-950 text-white' : 'text-gray-400 hover:bg-gray-800'"
+                 @click="activateTerminalTab(tab.id)">
+              <span>&#x2328;</span>
+              <span x-text="tab.label"></span>
+              <button @click.stop="closeTerminalTab(tab.id)"
+                      class="ml-1 hover:text-red-400 opacity-50 hover:opacity-100">&times;</button>
+            </div>
+          </template>
+          <button @click="openNewTerminal()"
+                  class="px-3 text-xs text-gray-500 hover:text-gray-200 h-full">+ Terminal</button>
+          <div class="flex-1"></div>
+          <button @click="terminalVisible = false" class="px-2 text-xs text-gray-600 hover:text-gray-300">&#x2304;</button>
+        </div>
+
+        <!-- xterm containers -->
+        <div class="flex-1 relative overflow-hidden">
+          <template x-for="tab in terminalTabs" :key="tab.id">
+            <div :id="`terminal-${tab.id}`"
+                 x-show="activeTerminalTab === tab.id"
+                 class="absolute inset-0 p-1"></div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTEXT MENU -->
+  <div x-show="ctxMenu.visible"
+       x-transition:enter="transition-all duration-100"
+       x-transition:enter-start="opacity-0 scale-95"
+       x-transition:enter-end="opacity-100 scale-100"
+       :style="`position:fixed; top:${ctxMenu.y}px; left:${ctxMenu.x}px; z-index:1000`"
+       @click.outside="ctxMenu.visible = false"
+       class="bg-gray-800 border border-gray-600 rounded-lg shadow-2xl py-1 min-w-52 text-sm">
+
+    <!-- Open file -->
+    <template x-if="ctxMenu.item && !ctxMenu.item.isDir && !ctxMenu.item.isRoot">
+      <button @click="openFileFromTree(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item">&#x1F4C4; Abrir en editor</button>
+    </template>
+
+    <!-- Terminal -->
+    <template x-if="ctxMenu.item">
+      <button @click="openTerminalForNode(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item">&#x1F5A5; Abrir terminal aqui</button>
+    </template>
+
+    <div class="border-t border-gray-700 my-1"></div>
+
+    <!-- Upload (folders and roots) -->
+    <template x-if="ctxMenu.item?.isDir || ctxMenu.item?.isRoot">
+      <button @click="triggerUpload(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item">&#x2B06; Subir archivos</button>
+    </template>
+
+    <!-- Download file -->
+    <template x-if="ctxMenu.item && !ctxMenu.item.isDir && !ctxMenu.item.isRoot">
+      <button @click="downloadTreeItem(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item">&#x2B07; Descargar</button>
+    </template>
+
+    <!-- Copy -->
+    <template x-if="ctxMenu.item && !ctxMenu.item.isRoot">
+      <button @click="clipboardCopy(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item">&#x1F4CB; Copiar</button>
+    </template>
+
+    <!-- Cut -->
+    <template x-if="ctxMenu.item && !ctxMenu.item.isRoot">
+      <button @click="clipboardCut(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item">&#x2702; Cortar</button>
+    </template>
+
+    <!-- Paste (show on dirs/roots when clipboard has content) -->
+    <template x-if="(ctxMenu.item?.isDir || ctxMenu.item?.isRoot) && clipboard">
+      <button @click="clipboardPaste(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item text-purple-300">&#x1F4CB; Pegar<span x-show="clipboard" class="text-gray-500 ml-1" x-text="'(' + clipboard?.name + ')'"></span></button>
+    </template>
+
+    <div class="border-t border-gray-700 my-1"></div>
+
+    <!-- New file -->
+    <button @click="createNewFileAt(ctxMenu.nodeKey); ctxMenu.visible=false"
+            class="ctx-item">&#x1F4C4; Nuevo archivo</button>
+
+    <!-- New folder -->
+    <template x-if="ctxMenu.item?.isDir || ctxMenu.item?.isRoot">
+      <button @click="createNewFolderAt(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item">&#x1F4C1; Nueva carpeta</button>
+    </template>
+
+    <!-- Refresh (dirs and roots) -->
+    <template x-if="ctxMenu.item?.isDir || ctxMenu.item?.isRoot">
+      <button @click="refreshNode(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item">&#x27F3; Refrescar</button>
+    </template>
+
+    <!-- Rename (not root) -->
+    <template x-if="ctxMenu.item && !ctxMenu.item.isRoot">
+      <button @click="startRename(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item">&#x270F; Renombrar</button>
+    </template>
+
+    <!-- Chmod (files only, not root) -->
+    <template x-if="ctxMenu.item && !ctxMenu.item.isDir && !ctxMenu.item.isRoot">
+      <button @click="showChmod(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item" style="color:#9ca3af">&#x1F510; Permisos (chmod)</button>
+    </template>
+
+    <div class="border-t border-gray-700 my-1"></div>
+
+    <!-- Delete (not root) -->
+    <template x-if="ctxMenu.item && !ctxMenu.item.isRoot">
+      <button @click="confirmDelete(ctxMenu.nodeKey); ctxMenu.visible=false"
+              class="ctx-item" style="color:#f87171">&#x1F5D1; Eliminar</button>
+    </template>
+  </div>
+
+  <!-- MODAL GENERICO -->
+  <div x-show="modal.visible"
+       x-transition:enter="transition-all duration-150"
+       x-transition:enter-start="opacity-0"
+       x-transition:enter-end="opacity-100"
+       class="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+    <div class="bg-gray-800 rounded-xl border border-gray-600 shadow-2xl p-6 w-full max-w-md"
+         @click.outside="modal.visible=false">
+      <h3 class="font-semibold text-lg mb-4" x-text="modal.title"></h3>
+      <div x-html="modal.body"></div>
+      <div class="flex gap-2 mt-4 justify-end">
+        <button @click="modal.visible=false"
+                class="px-3 py-1 bg-gray-700 rounded text-sm hover:bg-gray-600">Cancelar</button>
+        <button @click="modal.confirm?.()"
+                class="px-3 py-1 bg-purple-600 rounded text-sm hover:bg-purple-500">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- NOTIFICATIONS -->
+  <div class="fixed bottom-4 right-4 flex flex-col gap-2 z-50 pointer-events-none">
+    <template x-for="n in notifications" :key="n.id">
+      <div x-transition:enter="transition-all duration-200"
+           x-transition:enter-start="opacity-0 translate-x-4"
+           x-transition:enter-end="opacity-100 translate-x-0"
+           class="flex items-center gap-2 px-4 py-2 rounded-lg shadow-lg text-sm pointer-events-auto"
+           :class="{
+             'bg-green-700 text-green-100': n.type === 'success',
+             'bg-red-700 text-red-100':     n.type === 'error',
+             'bg-blue-700 text-blue-100':   n.type === 'info',
+           }">
+        <span x-text="n.message"></span>
+      </div>
+    </template>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/js/api.js"></script>
+  <script src="/js/editor.js"></script>
+  <script src="/js/terminal.js"></script>
+  <script src="/js/fileTree.js"></script>
+  <script src="/js/contextMenu.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+{
+  "name": "codefromhere",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3",
+    "@aws-sdk/lib-storage": "^3",
+    "@fastify/cookie": "^9",
+    "@fastify/multipart": "^8",
+    "@fastify/session": "^10",
+    "@fastify/static": "^7",
+    "@fastify/websocket": "^8",
+    "basic-ftp": "^5",
+    "bcryptjs": "^2",
+    "better-sqlite3": "^12",
+    "dotenv": "^16",
+    "fastify": "^4",
+    "nanoid": "^5",
+    "ssh2": "^1",
+    "ssh2-sftp-client": "^10"
+  }
+}
