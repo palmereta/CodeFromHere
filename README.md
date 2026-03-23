@@ -122,7 +122,7 @@ node server.js
 
 Open `http://localhost:3000` in your browser.
 
-**Default credentials**: `admin` / `admin123` --- change this immediately.
+**Default admin account**: A secure random password is generated on first run and printed to the console. Save it --- it won't be shown again. Change it in Settings after your first login.
 
 ### Configuration
 
