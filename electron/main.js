@@ -45,19 +45,27 @@ async function startApp() {
     minWidth: 800,
     minHeight: 500,
     titleBarStyle: 'hiddenInset',
-    vibrancy: 'under-window',
-    visualEffectState: 'active',
-    backgroundColor: '#00000000',
-    transparent: true,
+    backgroundColor: '#0a0a0a',
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      webSecurity: false, // allow preload with HTTP URLs
     },
   })
 
   mainWindow.loadURL(`http://127.0.0.1:${serverPort}/`)
+
+  // Forward renderer console to main process stdout (debug)
+  mainWindow.webContents.on('console-message', (event, level, message) => {
+    if (level >= 2) console.error('[renderer]', message) // only warnings/errors
+  })
+
+  // Open DevTools in development
+  if (process.argv.includes('--devtools')) {
+    mainWindow.webContents.openDevTools()
+  }
 
   // Save window state
   let saveTimeout

@@ -3,7 +3,7 @@ import { spawn } from 'child_process'
 import os from 'os'
 
 let pty = null
-let ptyAvailable = null // null = not checked, true/false
+let ptyAvailable = null
 
 const terminals = new Map()
 let nextId = 1
@@ -13,16 +13,14 @@ async function loadPty() {
   try {
     const mod = await import('node-pty')
     pty = mod.default || mod
-    // Test that it actually works by checking spawn exists
     if (typeof pty.spawn !== 'function') throw new Error('spawn not found')
-    // Try a quick spawn to verify native module works
     const test = pty.spawn('/bin/echo', ['test'], { name: 'xterm', cols: 10, rows: 1 })
     test.kill()
     ptyAvailable = true
     console.log('node-pty loaded and working')
   } catch (e) {
     ptyAvailable = false
-    console.log('node-pty not usable (' + e.message + '), using child_process fallback')
+    console.log('node-pty not usable (' + e.message + '), using script(1) PTY fallback')
   }
   return ptyAvailable
 }
@@ -38,7 +36,7 @@ export function setupLocalTerminal(mainWindow) {
     const hasPty = await loadPty()
 
     if (hasPty) {
-      // Full PTY mode
+      // Full PTY mode via node-pty
       const term = pty.spawn(shell, ['--login'], {
         name: 'xterm-256color',
         cols, rows, cwd,
@@ -60,14 +58,22 @@ export function setupLocalTerminal(mainWindow) {
         }
       })
     } else {
-      // Fallback: child_process with pseudo-interactive mode
-      const proc = spawn(shell, ['-i'], {
+      // Fallback: use macOS `script` command which allocates a real PTY
+      // script -q /dev/null $SHELL --login
+      // This gives us a real pseudo-terminal without node-pty
+      const proc = spawn('script', ['-q', '/dev/null', shell, '--login'], {
         cwd,
-        env: { ...process.env, TERM: 'xterm-256color', COLUMNS: String(cols), LINES: String(rows) },
+        env: {
+          ...process.env,
+          TERM: 'xterm-256color',
+          COLUMNS: String(cols),
+          LINES: String(rows),
+          LANG: process.env.LANG || 'en_US.UTF-8',
+        },
         stdio: ['pipe', 'pipe', 'pipe'],
       })
 
-      terminals.set(id, { type: 'child', proc })
+      terminals.set(id, { type: 'script', proc })
 
       proc.stdout.on('data', (data) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -78,6 +84,14 @@ export function setupLocalTerminal(mainWindow) {
       proc.stderr.on('data', (data) => {
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('pty:data', id, data.toString())
+        }
+      })
+
+      proc.on('error', (err) => {
+        console.error('Local terminal error:', err.message)
+        terminals.delete(id)
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('pty:exit', id, 1)
         }
       })
 
@@ -95,16 +109,24 @@ export function setupLocalTerminal(mainWindow) {
   ipcMain.on('pty:write', (event, id, data) => {
     const entry = terminals.get(id)
     if (!entry) return
-    if (entry.type === 'pty') entry.proc.write(data)
-    else entry.proc.stdin.write(data)
+    if (entry.type === 'pty') {
+      entry.proc.write(data)
+    } else {
+      // script fallback: write to stdin
+      try { entry.proc.stdin.write(data) } catch {}
+    }
   })
 
   ipcMain.on('pty:resize', (event, id, cols, rows) => {
     const entry = terminals.get(id)
     if (!entry) return
     try {
-      if (entry.type === 'pty') entry.proc.resize(cols, rows)
-      // child_process doesn't support resize
+      if (entry.type === 'pty') {
+        entry.proc.resize(cols, rows)
+      } else {
+        // For script fallback, send SIGWINCH-like resize via stty if possible
+        // Not perfect but better than nothing
+      }
     } catch {}
   })
 
@@ -113,7 +135,7 @@ export function setupLocalTerminal(mainWindow) {
     if (!entry) return
     try {
       if (entry.type === 'pty') entry.proc.kill()
-      else entry.proc.kill('SIGTERM')
+      else entry.proc.kill('SIGHUP')
     } catch {}
     terminals.delete(id)
   })
@@ -130,7 +152,7 @@ export function setupLocalTerminal(mainWindow) {
     for (const [id, entry] of terminals) {
       try {
         if (entry.type === 'pty') entry.proc.kill()
-        else entry.proc.kill('SIGTERM')
+        else entry.proc.kill('SIGHUP')
       } catch {}
     }
     terminals.clear()
