@@ -94,7 +94,8 @@ await initDatabase()
 
 const host = process.env.HOST || '0.0.0.0'
 
-await fastify.listen({ port: port || parseInt(process.env.PORT || '3000'), host })
+const listenPort = port !== undefined && port !== null ? port : parseInt(process.env.PORT || '3000')
+await fastify.listen({ port: listenPort, host })
 const actualPort = fastify.server.address().port
 console.log(`CodeFromHere corriendo en http://${host === '0.0.0.0' ? 'localhost' : host}:${actualPort}`)
 
