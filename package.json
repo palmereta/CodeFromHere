@@ -37,24 +37,32 @@
     "appId": "com.codefromhere.app",
     "productName": "CodeFromHere",
     "mac": {
-      "target": "dmg",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        }
+      ],
       "category": "public.app-category.developer-tools",
-      "icon": "electron/icon.icns",
-      "hardenedRuntime": true
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
     },
     "files": [
       "electron/**",
       "public/**",
       "src/**",
       "server.js",
-      "package.json"
+      "package.json",
+      ".env.example",
+      "node_modules/**"
     ],
     "extraResources": [
       {
-        "from": "data/",
-        "to": "data/"
+        "from": ".env.example",
+        "to": ".env"
       }
     ],
-    "asar": false
+    "asar": false,
+    "npmRebuild": false
   }
 }

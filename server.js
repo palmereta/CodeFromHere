@@ -127,9 +127,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 return actualPort
 }
 
-// Auto-start: standalone mode OR Electron forked process
-const isMainModule = !process.argv[1] || process.argv[1] === fileURLToPath(import.meta.url)
-if (isMainModule) {
-  const port = parseInt(process.env.PORT || '3000')
-  startServer(port)
+// Auto-start in standalone mode only (Electron calls startServer() directly)
+if (!process.env.ELECTRON) {
+  startServer(parseInt(process.env.PORT || '3000'))
 }
