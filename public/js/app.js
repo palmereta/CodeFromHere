@@ -26,8 +26,8 @@ function ideApp() {
     // Terminal
     terminalTabs: [],
     activeTerminalTab: null,
-    terminalVisible: false,
-    terminalHeight: 260,
+    // View mode: 'terminal' or 'editor'
+    activeView: 'terminal',
 
     // Layout
     sidebarVisible: true,
@@ -61,6 +61,25 @@ function ideApp() {
       this.initTreeRoots()
       this.initMonaco()
       this.initKeyboardShortcuts()
+
+      // Electron menu actions
+      if (window.electronAPI?.isElectron) {
+        window.electronAPI.onMenuAction((action) => {
+          switch (action) {
+            case 'new-local-terminal': this.openLocalTerminal(); break
+            case 'new-ssh-terminal': this.openNewTerminal(); break
+            case 'close-tab':
+              if (this.activeView === 'terminal' && this.activeTerminalTab) this.closeTerminalTab(this.activeTerminalTab)
+              else if (this.activeView === 'editor' && this.activeEditorTab) this.closeEditorTab(this.activeEditorTab)
+              break
+            case 'toggle-sidebar': this.toggleSidebar(); break
+            case 'toggle-terminal': this.toggleTerminalPanel(); break
+            case 'open-settings': window.location.href = '/connections.html'; break
+          }
+        })
+        // Auto-open a local terminal on startup
+        this.openLocalTerminal()
+      }
     },
 
     // ─── CONNECTIONS ────────────────────────────────────────
@@ -302,6 +321,7 @@ function ideApp() {
           dirty: false,
         })
         this.activeEditorTab = tabId
+        this.activeView = 'editor'
 
         await this.$nextTick()
         this.ensureEditorCreated()
@@ -327,6 +347,7 @@ function ideApp() {
     },
 
     activateEditorTab(tabId) {
+      this.activeView = 'editor'
       this.activeEditorTab = tabId
       const model = _store.monacoModels[tabId]
       if (model && _store.monacoEditor) {
@@ -383,6 +404,99 @@ function ideApp() {
           label: item.isRoot ? item.name : (path.split('/').pop() || '/'),
           ws_url: token
         })
+      this.activeView = 'terminal'
+      } catch (e) { this.notify(e.message, 'error') }
+    },
+
+    async openLocalTerminal() {
+      if (!window.electronAPI?.isElectron) {
+        this.notify('Local terminal only available in desktop app', 'info')
+        return
+      }
+      const tabId = `term-${Date.now()}`
+      this.terminalTabs.push({ id: tabId, label: 'Local', isLocal: true })
+      this.activeTerminalTab = tabId
+      this.activeView = 'terminal'
+
+      await this.$nextTick()
+
+      const container = document.getElementById(`terminal-${tabId}`)
+      if (!container) return
+
+      const term = new Terminal({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', monospace",
+        theme: {
+          background: 'transparent', foreground: '#e5e7eb', cursor: '#a78bfa', selection: '#4c1d95',
+          black: '#1f2937', red: '#ef4444', green: '#22c55e', yellow: '#eab308',
+          blue: '#3b82f6', magenta: '#a855f7', cyan: '#06b6d4', white: '#f9fafb',
+        },
+        allowTransparency: true,
+      })
+      const fitAddon = new FitAddon.FitAddon()
+      const linksAddon = new WebLinksAddon.WebLinksAddon()
+      term.loadAddon(fitAddon)
+      term.loadAddon(linksAddon)
+      term.open(container)
+      fitAddon.fit()
+
+      // Spawn local PTY via Electron IPC
+      const ptyId = await window.electronAPI.spawnLocalTerminal({
+        cols: term.cols,
+        rows: term.rows,
+      })
+
+      // PTY data → xterm
+      window.electronAPI.onTerminalData((id, data) => {
+        if (id === ptyId) term.write(data)
+      })
+
+      // PTY exit
+      window.electronAPI.onTerminalExit((id, code) => {
+        if (id === ptyId) {
+          term.write(`\r\n\x1b[33m[Process exited with code ${code}]\x1b[0m\r\n`)
+        }
+      })
+
+      // xterm input → PTY
+      term.onData(data => {
+        window.electronAPI.writeToTerminal(ptyId, data)
+      })
+
+      // Throttled resize
+      let resizeTimer = null
+      const resizeObserver = new ResizeObserver(() => {
+        if (resizeTimer) return
+        resizeTimer = setTimeout(() => {
+          resizeTimer = null
+          try {
+            fitAddon.fit()
+            window.electronAPI.resizeTerminal(ptyId, term.cols, term.rows)
+          } catch {}
+        }, 150)
+      })
+      resizeObserver.observe(container)
+
+      _store.terminals[tabId] = { term, ptyId, observer: resizeObserver, fitAddon, isLocal: true }
+      term.focus()
+    },
+
+    async openSSHTerminalFor(connectionId) {
+      const rootKey = this.nodeKey(connectionId, 'ROOT')
+      const item = this.treeItems[rootKey]
+      if (!item) return
+      try {
+        const { token } = await api.post('/api/terminal/token', {
+          connection_id: connectionId,
+          path: item.path || '/'
+        })
+        await this.createTerminalTab({
+          label: item.name,
+          ws_url: token,
+          isLocal: false,
+        })
+        this.activeView = 'terminal'
       } catch (e) { this.notify(e.message, 'error') }
     },
 
@@ -393,8 +507,7 @@ function ideApp() {
 
     async createTerminalTab({ label, ws_url }) {
       const tabId = `term-${Date.now()}`
-      this.terminalTabs.push({ id: tabId, label })
-      this.terminalVisible = true
+      this.terminalTabs.push({ id: tabId, label, isLocal: false })
       this.activeTerminalTab = tabId
 
       await this.$nextTick()
@@ -474,6 +587,9 @@ function ideApp() {
       const t = _store.terminals[tabId]
       if (t) {
         try { t.ws?.close() } catch {}
+        if (t.isLocal && t.ptyId && window.electronAPI) {
+          window.electronAPI.killTerminal(t.ptyId)
+        }
         try { t.term?.dispose() } catch {}
         try { t.observer?.disconnect() } catch {}
         delete _store.terminals[tabId]
@@ -815,7 +931,9 @@ function ideApp() {
     },
 
     toggleSidebar() { this.sidebarVisible = !this.sidebarVisible },
-    toggleTerminalPanel() { this.terminalVisible = !this.terminalVisible },
+    toggleTerminalPanel() {
+      this.activeView = this.activeView === 'terminal' ? 'editor' : 'terminal'
+    },
 
     startSidebarResize(e) {
       const startX = e.clientX, startW = this.sidebarWidth
@@ -839,6 +957,7 @@ function ideApp() {
           if (e.key === 'b') { e.preventDefault(); this.toggleSidebar() }
           if (e.key === '`') { e.preventDefault(); this.toggleTerminalPanel() }
           if (e.key === 'w') { e.preventDefault(); if (this.activeEditorTab) this.closeEditorTab(this.activeEditorTab) }
+          if (e.key === 't') { e.preventDefault(); this.openLocalTerminal() }
         }
         if (e.key === 'Escape') {
           this.ctxMenu.visible = false

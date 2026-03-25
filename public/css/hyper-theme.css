@@ -1,0 +1,255 @@
+/* Hyper Terminal Theme for CodeFromHere */
+
+/* macOS title bar integration */
+.title-bar {
+  -webkit-app-region: drag;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  padding-left: 78px; /* space for macOS traffic lights */
+  background: rgba(0, 0, 0, 0.85);
+  border-bottom: 1px solid #222;
+  flex-shrink: 0;
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.title-bar * {
+  -webkit-app-region: no-drag;
+}
+
+/* When not in Electron, normal header */
+body:not(.is-electron) .title-bar {
+  -webkit-app-region: auto;
+  padding-left: 16px;
+}
+
+/* Hyper-style tabs */
+.hyper-tabs {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  overflow-x: auto;
+  flex: 1;
+  gap: 0;
+}
+
+.hyper-tabs::-webkit-scrollbar { display: none; }
+
+.hyper-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  font-size: 12px;
+  color: #666;
+  cursor: pointer;
+  border-right: 1px solid #1a1a1a;
+  position: relative;
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s;
+  min-width: 0;
+  max-width: 200px;
+  flex-shrink: 0;
+}
+
+.hyper-tab:hover {
+  color: #ccc;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.hyper-tab.active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.hyper-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #7c3aed; /* purple accent */
+}
+
+.hyper-tab .tab-close {
+  opacity: 0;
+  font-size: 14px;
+  line-height: 1;
+  transition: opacity 0.1s;
+  color: #666;
+  flex-shrink: 0;
+}
+
+.hyper-tab:hover .tab-close,
+.hyper-tab.active .tab-close {
+  opacity: 1;
+}
+
+.hyper-tab .tab-close:hover {
+  color: #f87171;
+}
+
+.hyper-tab .tab-icon {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.hyper-tab .tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hyper-tab .tab-dirty {
+  color: #7c3aed;
+  flex-shrink: 0;
+}
+
+/* Tab bar actions */
+.tab-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+  flex-shrink: 0;
+}
+
+.tab-action-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: #555;
+  font-size: 14px;
+  transition: all 0.1s;
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+
+.tab-action-btn:hover {
+  color: #ccc;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Split pane system */
+.split-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.split-container.horizontal { flex-direction: column; }
+.split-container.vertical { flex-direction: row; }
+
+.split-pane {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.split-pane.focused {
+  outline: 1px solid rgba(124, 58, 237, 0.3);
+  outline-offset: -1px;
+}
+
+.split-divider {
+  background: #222;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.split-divider:hover {
+  background: #7c3aed;
+}
+
+.split-divider.horizontal {
+  height: 2px;
+  cursor: row-resize;
+}
+
+.split-divider.vertical {
+  width: 2px;
+  cursor: col-resize;
+}
+
+/* Terminal pane header */
+.pane-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: rgba(0, 0, 0, 0.3);
+  font-size: 10px;
+  color: #555;
+  flex-shrink: 0;
+  border-bottom: 1px solid #1a1a1a;
+}
+
+.pane-header .pane-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-header .pane-type {
+  padding: 0 4px;
+  border-radius: 2px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.pane-type.local { color: #22c55e; }
+.pane-type.ssh { color: #3b82f6; }
+
+/* Notification bell badge */
+.bell-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #7c3aed;
+  color: white;
+  font-size: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Override xterm background for transparency */
+.xterm { background: transparent !important; }
+.xterm-viewport { background: transparent !important; }
+
+/* Sidebar refinements for Hyper look */
+.sidebar-hyper {
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-right: 1px solid #1a1a1a;
+}
+
+/* Hyper-style scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* Monaco editor transparent background */
+.monaco-editor, .monaco-editor-background, .monaco-editor .margin {
+  background: transparent !important;
+}

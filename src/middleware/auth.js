@@ -68,6 +68,23 @@ export function auditLog(userId, action, opts = {}) {
 
 export function authMiddleware(fastify) {
   fastify.addHook('onRequest', async (request, reply) => {
+    // Desktop mode: auto-authenticate as admin
+    if (process.env.ELECTRON === '1') {
+      if (!request.session?.userId) {
+        const db = getDb()
+        const admin = db.prepare('SELECT id, username, email FROM users WHERE id = 1').get()
+        if (admin) {
+          request.session.userId = admin.id
+          request.user = admin
+          return
+        }
+      } else {
+        const db = getDb()
+        request.user = db.prepare('SELECT id, username, email FROM users WHERE id = ?').get(request.session.userId)
+        return
+      }
+    }
+
     // Attach client IP to every request for audit logging
     request.clientIp = request.ip || request.headers['x-forwarded-for']?.split(',')[0]?.trim() || 'unknown'
 

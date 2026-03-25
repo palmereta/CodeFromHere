@@ -2,10 +2,13 @@
   "name": "codefromhere",
   "version": "1.0.0",
   "type": "module",
-  "main": "server.js",
+  "main": "electron/main.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "electron:dev": "ELECTRON=1 electron .",
+    "electron:build": "electron-builder --mac",
+    "electron:rebuild": "electron-rebuild"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3",
@@ -19,9 +22,39 @@
     "bcryptjs": "^2",
     "better-sqlite3": "^12",
     "dotenv": "^16",
+    "electron-store": "^8",
     "fastify": "^4",
     "nanoid": "^5",
+    "node-pty": "^1.1.0",
     "ssh2": "^1",
     "ssh2-sftp-client": "^10"
+  },
+  "devDependencies": {
+    "electron": "^31",
+    "electron-builder": "^25"
+  },
+  "build": {
+    "appId": "com.codefromhere.app",
+    "productName": "CodeFromHere",
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.developer-tools",
+      "icon": "electron/icon.icns",
+      "hardenedRuntime": true
+    },
+    "files": [
+      "electron/**",
+      "public/**",
+      "src/**",
+      "server.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "data/",
+        "to": "data/"
+      }
+    ],
+    "asar": false
   }
 }

@@ -21,6 +21,8 @@ import { sshBridgeHandler, activeSessions } from './src/ws/sshBridge.js'
 dotenv.config()
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
+export async function startServer(port) {
+
 const fastify = Fastify({
   logger: { level: process.env.LOG_LEVEL || 'info' },
   bodyLimit: 100 * 1024 * 1024, // 100MB para uploads
@@ -90,11 +92,11 @@ fastify.get('/ws/terminal', { websocket: true }, sshBridgeHandler)
 // Init DB y arrancar
 await initDatabase()
 
-const port = parseInt(process.env.PORT || '3000')
 const host = process.env.HOST || '0.0.0.0'
 
-await fastify.listen({ port, host })
-console.log(`CodeFromHere corriendo en http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`)
+await fastify.listen({ port: port || parseInt(process.env.PORT || '3000'), host })
+const actualPort = fastify.server.address().port
+console.log(`CodeFromHere corriendo en http://${host === '0.0.0.0' ? 'localhost' : host}:${actualPort}`)
 
 // Evitar que errores no capturados maten el proceso
 process.on('uncaughtException', (err) => {
@@ -121,3 +123,13 @@ function gracefulShutdown(signal) {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+
+return actualPort
+}
+
+// Auto-start: standalone mode OR Electron forked process
+const isMainModule = !process.argv[1] || process.argv[1] === fileURLToPath(import.meta.url)
+if (isMainModule) {
+  const port = parseInt(process.env.PORT || '3000')
+  startServer(port)
+}
