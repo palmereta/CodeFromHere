@@ -15,24 +15,26 @@ beforeAll(() => {
     chmodSync(join(bin, a), 0o755)
   }
 })
+// These run the generated commands through /bin/sh, so they only apply to POSIX hosts.
+const posix = it.skipIf(process.platform === 'win32')
 const run = (cmd) => execFileSync('/bin/sh', ['-c', cmd], { env: { PATH: `${bin}:/usr/bin:/bin` } }).toString()
 
 const PROMPT = `It's a "billing" service.\nRun \`npm test\` & $HOME stays literal.\n`
 
 describe('buildAgentCommand', () => {
-  it('claude: new session id + prompt file', () => {
+  posix('claude: new session id + prompt file', () => {
     const f = join(dir, 'p.md'); writeFileSync(f, PROMPT)
     const out = run(buildAgentCommand({ agent: 'claude', promptFile: f, sessionId: 'abc-123' }))
     expect(out).toContain(`[--session-id][abc-123][--append-system-prompt-file][${f}]`)
   })
 
-  it('claude: resume by id wins over new session id', () => {
+  posix('claude: resume by id wins over new session id', () => {
     const out = run(buildAgentCommand({ agent: 'claude', resume: { id: 'xyz' }, sessionId: 'ignored' }))
     expect(out).toContain('[--resume][xyz]')
     expect(out).not.toContain('ignored')
   })
 
-  it('codex: developer_instructions read from a TOML string file, shell-safe', () => {
+  posix('codex: developer_instructions read from a TOML string file, shell-safe', () => {
     const f = join(dir, 'p.toml'); writeFileSync(f, tomlString(PROMPT))
     const out = run(buildAgentCommand({ agent: 'codex', tomlFile: f, resume: { last: true } }))
     expect(out.startsWith('[resume][--last][-c][developer_instructions=')).toBe(true)
@@ -40,13 +42,13 @@ describe('buildAgentCommand', () => {
     expect(JSON.parse(value)).toBe(PROMPT) // TOML basic string == JSON string here
   })
 
-  it('opencode: instructions via OPENCODE_CONFIG_CONTENT', () => {
+  posix('opencode: instructions via OPENCODE_CONFIG_CONTENT', () => {
     const out = run(buildAgentCommand({ agent: 'opencode', promptFile: "/tmp/it's here.md", resume: { id: 'ses_1' } }))
     expect(out).toContain('[--session][ses_1]')
     expect(JSON.parse(out.split('ENV:')[1])).toEqual({ instructions: ["/tmp/it's here.md"] })
   })
 
-  it('posixQuote survives hostile input', () => {
+  posix('posixQuote survives hostile input', () => {
     const evil = `'; rm -rf / #$(whoami)\``
     expect(run(`printf %s ${posixQuote(evil)}`)).toBe(evil)
   })
