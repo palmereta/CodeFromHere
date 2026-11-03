@@ -1,6 +1,12 @@
 node_modules/
 data/
+dist/
 .env
+*.log
+.DS_Store
+release/
+desktop/node_modules/
+desktop/dist/
 *.db
 *.db-shm
 *.db-wal

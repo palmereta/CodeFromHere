@@ -1,5 +1,5 @@
 import { getDb } from '../db/database.js'
-import { encrypt, decrypt } from '../services/crypto.js'
+import { encrypt, decrypt } from '../security/crypto.js'
 import { generateUserKeyPair } from '../services/sshKeygen.js'
 
 export default async function settingsRoutes(fastify) {

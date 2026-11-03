@@ -1,63 +1,86 @@
-import Database from 'better-sqlite3'
-import { readFileSync, mkdirSync } from 'fs'
-import { fileURLToPath } from 'url'
-import { dirname, join } from 'path'
-import { randomBytes } from 'crypto'
+import Database from './sqlite.js'
+import { readFileSync, readdirSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { randomBytes } from 'node:crypto'
 import bcrypt from 'bcryptjs'
+import { DATA_DIR, MODE } from '../config.js'
 import { generateUserKeyPair } from '../services/sshKeygen.js'
-import { encrypt } from '../services/crypto.js'
+import { encrypt, decrypt, isLegacyCiphertext, SECRET_FIELDS } from '../security/crypto.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 let db
 
-export function initDatabase() {
-  mkdirSync(join(__dirname, '../../data'), { recursive: true })
-  db = new Database(join(__dirname, '../../data/cubiq.db'))
-  db.pragma('journal_mode = WAL')
+/** Applies migrations/NNN_*.sql in order, tracked through PRAGMA user_version. */
+function migrate() {
+  const dir = join(__dirname, 'migrations')
+  const files = readdirSync(dir).filter(f => /^\d{3}_.*\.sql$/.test(f)).sort()
+  const current = db.pragma('user_version', { simple: true })
+  db.pragma('foreign_keys = OFF')
+  for (const file of files) {
+    const version = parseInt(file.slice(0, 3), 10)
+    if (version <= current) continue
+    const sql = readFileSync(join(dir, file), 'utf8')
+    db.transaction(() => {
+      db.exec(sql)
+      if (version === 2) reencryptLegacySecrets()
+      db.pragma(`user_version = ${version}`)
+    })()
+    console.log(`[db] migration ${file} applied`)
+  }
   db.pragma('foreign_keys = ON')
+  const problems = db.pragma('foreign_key_check')
+  if (problems.length) console.warn('[db] foreign key problems after migration:', problems.length)
+}
 
-  const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf8')
-  db.exec(schema)
-
-  // Seed: usuario admin si no existe
-  const admin = db.prepare('SELECT id FROM users WHERE username = ?').get('admin')
-  if (!admin) {
-    // Generate a secure random password on first run
-    const defaultPass = randomBytes(16).toString('base64url')
-    const hash = bcrypt.hashSync(defaultPass, 12)
-    const result = db.prepare('INSERT INTO users (username, email, password) VALUES (?,?,?)')
-      .run('admin', 'admin@codefromhere', hash)
-    console.log('')
-    console.log('╔══════════════════════════════════════════════════╗')
-    console.log('║  Admin account created                          ║')
-    console.log('║                                                 ║')
-    console.log(`║  User:     admin                                ║`)
-    console.log(`║  Password: ${defaultPass.padEnd(37)}║`)
-    console.log('║                                                 ║')
-    console.log('║  Save this password! It won\'t be shown again.   ║')
-    console.log('║  Change it in Settings after first login.       ║')
-    console.log('╚══════════════════════════════════════════════════╝')
-    console.log('')
-
-    // Generate default SSH key pair for admin
-    const { publicKey, privateKey } = generateUserKeyPair('admin@codefromhere')
-    db.prepare('INSERT INTO ssh_keys (user_id, name, private_key, public_key) VALUES (?,?,?,?)')
-      .run(result.lastInsertRowid, 'default', encrypt(privateKey), publicKey)
-    console.log('SSH key pair generated for admin')
+function reencryptLegacySecrets() {
+  const rows = db.prepare(`SELECT id, ${SECRET_FIELDS.join(', ')} FROM connections`).all()
+  const upd = db.prepare(`UPDATE connections SET ${SECRET_FIELDS.map(f => `${f} = @${f}`).join(', ')} WHERE id = @id`)
+  for (const row of rows) {
+    const next = { id: row.id }
+    let changed = false
+    for (const f of SECRET_FIELDS) {
+      next[f] = row[f]
+      if (isLegacyCiphertext(row[f])) { next[f] = encrypt(decrypt(row[f])); changed = true }
+    }
+    if (changed) upd.run(next)
   }
-
-  // Ensure every existing user has a default SSH key pair
-  const usersWithoutKey = db.prepare(`
-    SELECT u.id, u.username FROM users u
-    WHERE NOT EXISTS (SELECT 1 FROM ssh_keys sk WHERE sk.user_id = u.id AND sk.name = 'default')
-  `).all()
-  for (const user of usersWithoutKey) {
-    const { publicKey, privateKey } = generateUserKeyPair(`${user.username}@codefromhere`)
-    db.prepare('INSERT INTO ssh_keys (user_id, name, private_key, public_key) VALUES (?,?,?,?)')
-      .run(user.id, 'default', encrypt(privateKey), publicKey)
-    console.log(`Clave SSH generada para ${user.username}`)
+  for (const key of db.prepare('SELECT id, private_key FROM ssh_keys').all()) {
+    if (isLegacyCiphertext(key.private_key)) {
+      db.prepare('UPDATE ssh_keys SET private_key = ? WHERE id = ?').run(encrypt(decrypt(key.private_key)), key.id)
+    }
   }
+}
 
+function ensureDefaultKey(userId, username) {
+  const has = db.prepare("SELECT 1 FROM ssh_keys WHERE user_id = ? AND name = 'default'").get(userId)
+  if (has) return
+  const { publicKey, privateKey } = generateUserKeyPair(`${username}@codefromhere`)
+  db.prepare('INSERT INTO ssh_keys (user_id, name, private_key, public_key) VALUES (?,?,?,?)')
+    .run(userId, 'default', encrypt(privateKey), publicKey)
+}
+
+export function initDatabase() {
+  db = new Database(join(DATA_DIR, 'codefromhere.db'))
+  db.pragma('journal_mode = WAL')
+  db.pragma('busy_timeout = 5000')
+  migrate()
+
+  const userCount = db.prepare('SELECT COUNT(*) AS n FROM users').get().n
+  if (userCount === 0) {
+    // Desktop: single local user, logged in through the Electron token, so the
+    // password is random and never shown. Web: print it once on first boot.
+    const password = randomBytes(18).toString('base64url')
+    const id = db.prepare("INSERT INTO users (username, email, password, role, password_changed_at) VALUES (?,?,?,'admin',datetime('now'))")
+      .run(MODE === 'desktop' ? 'local' : 'admin', MODE === 'desktop' ? 'local@codefromhere' : 'admin@codefromhere', bcrypt.hashSync(password, 12))
+      .lastInsertRowid
+    if (MODE === 'web') {
+      console.log('\n  Admin account created  →  user: admin   password: ' + password)
+      console.log('  Save it now: it will not be shown again. Change it under Settings → Account.\n')
+    }
+    ensureDefaultKey(id, MODE === 'desktop' ? 'local' : 'admin')
+  }
+  for (const u of db.prepare('SELECT id, username FROM users').all()) ensureDefaultKey(u.id, u.username)
   return db
 }
 

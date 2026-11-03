@@ -1,331 +1,251 @@
 import { getDb } from '../db/database.js'
-import { encrypt, decryptConnection } from '../services/crypto.js'
-import { createAdapter } from '../services/filesystem.js'
-import { auditLog } from '../middleware/auth.js'
+import { encrypt, decryptConnection, SECRET_FIELDS } from '../security/crypto.js'
+import { createAdapter } from '../services/vfs/index.js'
+import { auditLog } from '../security/audit.js'
+import { trustHost, errorPayload } from '../services/sshConnect.js'
+import { parseCSV, parseSshConfig, parseFileZilla } from '../services/importers.js'
 
-// Allowed connection types (must match schema CHECK constraint)
-const ALLOWED_TYPES = ['sftp', 'ftp', 'ftps', 's3']
+export const TYPES = ['ssh', 'sftp', 'scp', 'ftp', 'ftps', 's3', 'telnet']
+const DEFAULT_PORTS = { ssh: 22, sftp: 22, scp: 22, ftp: 21, ftps: 21, telnet: 23 }
+const HOST_RE = /^[a-zA-Z0-9.\-_:[\]]+$/
+const COLOR_RE = /^#[0-9a-fA-F]{3,8}$/
 
-// Host validation: no spaces, no shell metacharacters
-const HOST_RE = /^[a-zA-Z0-9.\-_:]+$/
+const PLAIN_FIELDS = ['name', 'type', 'group_id', 'host', 'port', 'username', 'ssh_key_id', 'use_agent', 'jump_id',
+  'root_path', 'bucket', 'region', 'endpoint', 'ftps_implicit', 'tls_verify', 'use_tmux', 'startup_command',
+  'encoding', 'tags', 'notes', 'color', 'sort_order']
+const LIST_FIELDS = ['id', ...PLAIN_FIELDS, 'last_connected', 'created_at', 'updated_at']
+const BOOL_FIELDS = ['use_agent', 'ftps_implicit', 'tls_verify', 'use_tmux']
 
-function parseCSV(text) {
-  // Remove BOM if present
-  const clean = text.replace(/^\uFEFF/, '').trim()
-  const lines = []
-  let current = ''
-  let inQuotes = false
+function bad(msg) { return Object.assign(new Error(msg), { statusCode: 400 }) }
 
-  for (let i = 0; i < clean.length; i++) {
-    const ch = clean[i]
-    if (ch === '"') {
-      if (inQuotes && clean[i + 1] === '"') { current += '"'; i++; continue }
-      inQuotes = !inQuotes; continue
-    }
-    if ((ch === '\n' || (ch === '\r' && clean[i + 1] === '\n')) && !inQuotes) {
-      lines.push(current); current = ''
-      if (ch === '\r') i++ // skip \n after \r
-      continue
-    }
-    current += ch
+/** Whitelists, validates and encrypts a connection payload. */
+function normalize(body, userId, { partial = false } = {}) {
+  const db = getDb()
+  const out = {}
+  for (const f of PLAIN_FIELDS) if (body[f] !== undefined) out[f] = body[f] === '' ? null : body[f]
+  for (const f of SECRET_FIELDS) {
+    // Empty string on update means "keep"; explicit null means "clear".
+    if (body[f] === undefined || (partial && body[f] === '')) continue
+    out[f] = encrypt(body[f])
   }
-  if (current.trim()) lines.push(current)
-
-  if (lines.length < 2) return []
-
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase())
-  const rows = []
-  for (let i = 1; i < lines.length; i++) {
-    const values = []
-    let val = '', inQ = false
-    for (let j = 0; j < lines[i].length; j++) {
-      const c = lines[i][j]
-      if (c === '"') { if (inQ && lines[i][j+1] === '"') { val += '"'; j++ } else { inQ = !inQ }; continue }
-      if (c === ',' && !inQ) { values.push(val.trim()); val = ''; continue }
-      val += c
-    }
-    values.push(val.trim())
-
-    const row = {}
-    headers.forEach((h, idx) => { row[h] = values[idx] || '' })
-    if (Object.values(row).some(v => v !== '')) rows.push(row)
+  for (const f of BOOL_FIELDS) if (out[f] !== undefined && out[f] !== null) out[f] = out[f] ? 1 : 0
+  if (!partial && !out.name) throw bad('Name is required')
+  if (out.type !== undefined && !TYPES.includes(out.type)) throw bad(`Invalid type. Allowed: ${TYPES.join(', ')}`)
+  if (out.host && (!HOST_RE.test(out.host) || out.host.length > 253)) throw bad('Invalid host')
+  if (out.port !== undefined && out.port !== null) {
+    const p = Number(out.port)
+    if (!Number.isInteger(p) || p < 1 || p > 65535) throw bad('Port must be 1-65535')
+    out.port = p
   }
-  return rows
+  if (out.color && !COLOR_RE.test(out.color)) throw bad('Invalid color')
+  if (out.name && String(out.name).length > 200) throw bad('Name too long')
+  for (const ref of ['group_id', 'jump_id', 'ssh_key_id']) {
+    if (out[ref] === undefined || out[ref] === null) continue
+    const table = { group_id: 'connection_groups', jump_id: 'connections', ssh_key_id: 'ssh_keys' }[ref]
+    if (!db.prepare(`SELECT 1 FROM ${table} WHERE id = ? AND user_id = ?`).get(out[ref], userId)) throw bad(`Invalid ${ref}`)
+  }
+  return out
 }
 
-function validateCSVRow(row, rowNum) {
-  if (!row.name?.trim()) return `Nombre requerido`
-  const allowedTypes = ['sftp', 'ftp', 'ftps', 's3']
-  if (!allowedTypes.includes(row.type?.toLowerCase())) return `Tipo invalido: ${row.type} (usar: sftp, ftp, ftps, s3)`
-
-  const type = row.type.toLowerCase()
-  if (type !== 's3') {
-    if (!row.host?.trim()) return `Host requerido para ${type}`
-    if (row.port && (isNaN(row.port) || Number(row.port) < 1 || Number(row.port) > 65535)) return `Puerto invalido: ${row.port}`
-  }
-  if (type === 's3') {
-    if (!row.bucket?.trim()) return `Bucket requerido para S3`
-  }
-  return null // valid
+function publicRow(row) {
+  const o = {}
+  for (const f of LIST_FIELDS) o[f] = row[f]
+  for (const f of SECRET_FIELDS) o[`has_${f}`] = !!row[f]
+  return o
 }
 
-function validateConnectionInput(body, reply) {
-  const { type, host, port } = body || {}
+function insertConnection(userId, data) {
+  const keys = Object.keys(data)
+  return getDb().prepare(`INSERT INTO connections (user_id, ${keys.join(', ')}) VALUES (@user_id, ${keys.map(k => '@' + k).join(', ')})`)
+    .run({ user_id: userId, ...data }).lastInsertRowid
+}
 
-  if (type && !ALLOWED_TYPES.includes(type)) {
-    reply.code(400).send({ error: `Tipo inválido. Permitidos: ${ALLOWED_TYPES.join(', ')}` })
-    return false
+function ensureGroupPath(userId, path) {
+  if (!path) return null
+  const db = getDb()
+  let parent = null
+  for (const name of path.split('/').map(s => s.trim()).filter(Boolean)) {
+    const row = db.prepare('SELECT id FROM connection_groups WHERE user_id = ? AND name = ? AND parent_id IS ?').get(userId, name, parent)
+    parent = row ? row.id : db.prepare('INSERT INTO connection_groups (user_id, parent_id, name) VALUES (?,?,?)').run(userId, parent, name).lastInsertRowid
   }
-
-  if (host !== undefined && host !== null && host !== '') {
-    if (!HOST_RE.test(host) || host.length > 253) {
-      reply.code(400).send({ error: 'Formato de host inválido' })
-      return false
-    }
-  }
-
-  if (port !== undefined && port !== null && port !== '') {
-    const p = Number(port)
-    if (!Number.isInteger(p) || p < 1 || p > 65535) {
-      reply.code(400).send({ error: 'Puerto debe ser un número entre 1 y 65535' })
-      return false
-    }
-  }
-
-  return true
+  return parent
 }
 
 export default async function connectionsRoutes(fastify) {
-  // GET /api/connections — listar conexiones del usuario (sin credenciales)
-  fastify.get('/', async (request) => {
-    const db = getDb()
-    const rows = db.prepare(
-      'SELECT id, name, type, host, port, username, root_path, bucket, region, endpoint, color, sort_order, last_connected, created_at FROM connections WHERE user_id = ? ORDER BY sort_order, name'
-    ).all(request.user.id)
-    return rows
-  })
+  const uid = (r) => r.user.id
 
-  // POST /api/connections — crear conexión
-  fastify.post('/', async (request, reply) => {
-    const { name, type, host, port, username, password, private_key, passphrase,
-            root_path, bucket, region, endpoint, access_key, secret_key, color } = request.body || {}
+  // --- Groups ---------------------------------------------------------------
+  fastify.get('/groups', async (request) => getDb().prepare('SELECT * FROM connection_groups WHERE user_id = ? ORDER BY sort_order, name').all(uid(request)))
 
-    if (!name || !type) {
-      return reply.code(400).send({ error: 'Nombre y tipo son requeridos' })
+  fastify.post('/groups', async (request, reply) => {
+    const { name, parent_id = null, color = null } = request.body || {}
+    if (!name || String(name).length > 120) return reply.code(400).send({ error: 'Invalid name' })
+    if (parent_id && !getDb().prepare('SELECT 1 FROM connection_groups WHERE id = ? AND user_id = ?').get(parent_id, uid(request))) {
+      return reply.code(400).send({ error: 'Invalid parent' })
     }
-
-    if (!validateConnectionInput(request.body, reply)) return
-
-    const db = getDb()
-    const result = db.prepare(`
-      INSERT INTO connections (user_id, name, type, host, port, username, password, private_key, passphrase,
-        root_path, bucket, region, endpoint, access_key, secret_key, color)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      request.user.id, name, type, host || null, port || null, username || null,
-      encrypt(password), encrypt(private_key), encrypt(passphrase),
-      root_path || '/', bucket || null, region || 'us-east-1', endpoint || null,
-      encrypt(access_key), encrypt(secret_key), color || '#6366f1'
-    )
-
-    auditLog(request.user.id, 'connection_create', {
-      connectionId: result.lastInsertRowid,
-      path: `${type}://${host || 'n/a'}`,
-      ip: request.clientIp,
-    })
-
-    return { id: result.lastInsertRowid, name, type }
+    const id = getDb().prepare('INSERT INTO connection_groups (user_id, parent_id, name, color) VALUES (?,?,?,?)').run(uid(request), parent_id, name, color).lastInsertRowid
+    return { id }
   })
 
-  // GET /api/connections/:id — obtener una (sin credenciales)
+  fastify.put('/groups/:id', async (request, reply) => {
+    const db = getDb()
+    const id = Number(request.params.id)
+    const g = db.prepare('SELECT * FROM connection_groups WHERE id = ? AND user_id = ?').get(id, uid(request))
+    if (!g) return reply.code(404).send({ error: 'Not found' })
+    const { name, parent_id, color, collapsed, sort_order } = request.body || {}
+    if (parent_id !== undefined && parent_id !== null) {
+      // Prevent cycles: the new parent cannot be the group itself or a descendant.
+      let p = parent_id
+      while (p) {
+        if (p === id) return reply.code(400).send({ error: 'A group cannot be inside itself' })
+        p = db.prepare('SELECT parent_id FROM connection_groups WHERE id = ? AND user_id = ?').get(p, uid(request))?.parent_id
+      }
+    }
+    db.prepare(`UPDATE connection_groups SET name = COALESCE(?, name), parent_id = ?, color = COALESCE(?, color),
+                collapsed = COALESCE(?, collapsed), sort_order = COALESCE(?, sort_order) WHERE id = ?`)
+      .run(name ?? null, parent_id === undefined ? g.parent_id : parent_id, color ?? null,
+        collapsed === undefined ? null : (collapsed ? 1 : 0), sort_order ?? null, id)
+    return { ok: true }
+  })
+
+  fastify.delete('/groups/:id', async (request, reply) => {
+    const r = getDb().prepare('DELETE FROM connection_groups WHERE id = ? AND user_id = ?').run(Number(request.params.id), uid(request))
+    if (!r.changes) return reply.code(404).send({ error: 'Not found' })
+    return { ok: true }
+  })
+
+  // --- Known hosts ----------------------------------------------------------
+  fastify.get('/known-hosts', async (request) => getDb().prepare('SELECT * FROM known_hosts WHERE user_id = ? ORDER BY host').all(uid(request)))
+
+  fastify.delete('/known-hosts/:id', async (request) => {
+    getDb().prepare('DELETE FROM known_hosts WHERE id = ? AND user_id = ?').run(Number(request.params.id), uid(request))
+    auditLog(uid(request), 'known_host_removed', { ip: request.ip, id: Number(request.params.id) })
+    return { ok: true }
+  })
+
+  // --- Connections ----------------------------------------------------------
+  fastify.get('/', async (request) => getDb()
+    .prepare('SELECT * FROM connections WHERE user_id = ? ORDER BY sort_order, name').all(uid(request)).map(publicRow))
+
   fastify.get('/:id', async (request, reply) => {
-    const db = getDb()
-    const conn = db.prepare(
-      'SELECT id, name, type, host, port, username, root_path, bucket, region, endpoint, color, sort_order, last_connected, created_at FROM connections WHERE id = ? AND user_id = ?'
-    ).get(request.params.id, request.user.id)
-
-    if (!conn) return reply.code(404).send({ error: 'Conexión no encontrada' })
-    return conn
+    const row = getDb().prepare('SELECT * FROM connections WHERE id = ? AND user_id = ?').get(Number(request.params.id), uid(request))
+    return row ? publicRow(row) : reply.code(404).send({ error: 'Not found' })
   })
 
-  // PUT /api/connections/:id — actualizar
+  fastify.post('/', async (request, reply) => {
+    let data
+    try { data = normalize(request.body || {}, uid(request)) } catch (e) { return reply.code(e.statusCode || 400).send({ error: e.message }) }
+    if (!data.type) return reply.code(400).send({ error: 'Type is required' })
+    data.port ??= DEFAULT_PORTS[data.type] ?? null
+    const id = insertConnection(uid(request), data)
+    auditLog(uid(request), 'connection_create', { connectionId: id, ip: request.ip, path: `${data.type}://${data.host || data.bucket || ''}` })
+    return { id }
+  })
+
   fastify.put('/:id', async (request, reply) => {
+    const id = Number(request.params.id)
     const db = getDb()
-    const existing = db.prepare('SELECT id FROM connections WHERE id = ? AND user_id = ?')
-      .get(request.params.id, request.user.id)
-    if (!existing) return reply.code(404).send({ error: 'Conexión no encontrada' })
-
-    if (!validateConnectionInput(request.body, reply)) return
-
-    const { name, type, host, port, username, password, private_key, passphrase,
-            root_path, bucket, region, endpoint, access_key, secret_key, color } = request.body || {}
-
-    // Solo encriptar campos que se envían (si vienen vacíos, mantener los existentes)
-    const updates = []
-    const values = []
-
-    if (name !== undefined)        { updates.push('name = ?'); values.push(name) }
-    if (type !== undefined)        { updates.push('type = ?'); values.push(type) }
-    if (host !== undefined)        { updates.push('host = ?'); values.push(host) }
-    if (port !== undefined)        { updates.push('port = ?'); values.push(port) }
-    if (username !== undefined)    { updates.push('username = ?'); values.push(username) }
-    if (password !== undefined)    { updates.push('password = ?'); values.push(encrypt(password)) }
-    if (private_key !== undefined) { updates.push('private_key = ?'); values.push(encrypt(private_key)) }
-    if (passphrase !== undefined)  { updates.push('passphrase = ?'); values.push(encrypt(passphrase)) }
-    if (root_path !== undefined)   { updates.push('root_path = ?'); values.push(root_path) }
-    if (bucket !== undefined)      { updates.push('bucket = ?'); values.push(bucket) }
-    if (region !== undefined)      { updates.push('region = ?'); values.push(region) }
-    if (endpoint !== undefined)    { updates.push('endpoint = ?'); values.push(endpoint) }
-    if (access_key !== undefined)  { updates.push('access_key = ?'); values.push(encrypt(access_key)) }
-    if (secret_key !== undefined)  { updates.push('secret_key = ?'); values.push(encrypt(secret_key)) }
-    if (color !== undefined)       { updates.push('color = ?'); values.push(color) }
-
-    updates.push("updated_at = datetime('now')")
-    values.push(request.params.id, request.user.id)
-
-    db.prepare(`UPDATE connections SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`).run(...values)
-
-    auditLog(request.user.id, 'connection_update', {
-      connectionId: Number(request.params.id),
-      ip: request.clientIp,
-    })
-
+    if (!db.prepare('SELECT 1 FROM connections WHERE id = ? AND user_id = ?').get(id, uid(request))) return reply.code(404).send({ error: 'Not found' })
+    let data
+    try { data = normalize(request.body || {}, uid(request), { partial: true }) } catch (e) { return reply.code(e.statusCode || 400).send({ error: e.message }) }
+    if (data.jump_id === id) return reply.code(400).send({ error: 'A site cannot jump through itself' })
+    if (Object.keys(data).length) {
+      db.prepare(`UPDATE connections SET ${Object.keys(data).map(k => `${k} = @${k}`).join(', ')}, updated_at = datetime('now') WHERE id = @id`).run({ ...data, id })
+    }
+    auditLog(uid(request), 'connection_update', { connectionId: id, ip: request.ip, fields: Object.keys(data) })
     return { ok: true }
   })
 
-  // DELETE /api/connections/:id
+  fastify.post('/:id/duplicate', async (request, reply) => {
+    const row = getDb().prepare('SELECT * FROM connections WHERE id = ? AND user_id = ?').get(Number(request.params.id), uid(request))
+    if (!row) return reply.code(404).send({ error: 'Not found' })
+    const copy = {}
+    for (const f of [...PLAIN_FIELDS, ...SECRET_FIELDS]) copy[f] = row[f]
+    copy.name = `${row.name} (copy)`
+    return { id: insertConnection(uid(request), copy) }
+  })
+
   fastify.delete('/:id', async (request, reply) => {
-    const db = getDb()
-    const result = db.prepare('DELETE FROM connections WHERE id = ? AND user_id = ?')
-      .run(request.params.id, request.user.id)
-    if (result.changes === 0) return reply.code(404).send({ error: 'Conexión no encontrada' })
-
-    auditLog(request.user.id, 'connection_delete', {
-      connectionId: Number(request.params.id),
-      ip: request.clientIp,
-    })
-
+    const r = getDb().prepare('DELETE FROM connections WHERE id = ? AND user_id = ?').run(Number(request.params.id), uid(request))
+    if (!r.changes) return reply.code(404).send({ error: 'Not found' })
+    auditLog(uid(request), 'connection_delete', { connectionId: Number(request.params.id), ip: request.ip })
     return { ok: true }
   })
 
-  // POST /api/connections/:id/test — probar conexión
   fastify.post('/:id/test', async (request, reply) => {
-    const db = getDb()
-    const connRow = db.prepare('SELECT * FROM connections WHERE id = ? AND user_id = ?')
-      .get(request.params.id, request.user.id)
-    if (!connRow) return reply.code(404).send({ error: 'Conexión no encontrada' })
-
-    const conn = decryptConnection(connRow)
-    const adapter = createAdapter(conn)
-
+    const row = getDb().prepare('SELECT * FROM connections WHERE id = ? AND user_id = ?').get(Number(request.params.id), uid(request))
+    if (!row) return reply.code(404).send({ error: 'Not found' })
+    if (row.type === 'telnet') return { ok: true, message: 'Telnet sites are tested when opening a terminal' }
+    const adapter = createAdapter(decryptConnection(row), uid(request))
     try {
       await adapter.connect()
-      const items = await adapter.list(conn.root_path || '/')
-      await adapter.disconnect()
-      // Actualizar last_connected
-      db.prepare("UPDATE connections SET last_connected = datetime('now') WHERE id = ?").run(connRow.id)
-      return { ok: true, message: `Conectado. ${items.length} items en ${conn.root_path || '/'}` }
+      const items = await adapter.list(row.root_path || '/')
+      return { ok: true, message: `Connected. ${items.length} items in ${row.root_path || '/'}` }
     } catch (err) {
-      return { ok: false, error: err.message }
+      return { ok: false, ...errorPayload(err) }
+    } finally {
+      await adapter.disconnect().catch(() => {})
     }
   })
 
-  // PUT /api/connections/reorder
-  fastify.put('/reorder', async (request) => {
-    const { ids } = request.body || {}
-    if (!Array.isArray(ids)) return { ok: false }
-    const db = getDb()
-    const stmt = db.prepare('UPDATE connections SET sort_order = ? WHERE id = ? AND user_id = ?')
-    const tx = db.transaction(() => {
-      ids.forEach((id, index) => stmt.run(index, id, request.user.id))
-    })
-    tx()
+  // The UI calls this after the user confirmed a fingerprint.
+  fastify.post('/:id/trust-host', async (request, reply) => {
+    const row = getDb().prepare('SELECT host, port, type FROM connections WHERE id = ? AND user_id = ?').get(Number(request.params.id), uid(request))
+    if (!row) return reply.code(404).send({ error: 'Not found' })
+    const { fingerprint, host = row.host, port = row.port || 22, keyType = null } = request.body || {}
+    if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(fingerprint || '')) return reply.code(400).send({ error: 'Invalid fingerprint' })
+    // The host may be a jump host of this connection; only allow hosts the user has configured.
+    const owned = getDb().prepare('SELECT 1 FROM connections WHERE user_id = ? AND host = ?').get(uid(request), host)
+    if (!owned) return reply.code(400).send({ error: 'Unknown host' })
+    trustHost(uid(request), host, Number(port), fingerprint, keyType)
+    auditLog(uid(request), 'host_key_trusted', { connectionId: Number(request.params.id), ip: request.ip, host, port, fingerprint })
     return { ok: true }
   })
 
-  // POST /api/connections/import — bulk import from CSV
-  fastify.post('/import', async (request, reply) => {
-    const parts = request.parts()
-    let csvText = null
-
-    for await (const part of parts) {
-      if (part.type === 'file') {
-        const chunks = []
-        for await (const chunk of part.file) chunks.push(chunk)
-        csvText = Buffer.concat(chunks).toString('utf8')
+  // [{ id, group_id, sort_order }] — drag & drop in the sites tree
+  fastify.put('/reorder', async (request, reply) => {
+    const items = request.body?.items
+    if (!Array.isArray(items)) return reply.code(400).send({ error: 'items required' })
+    const db = getDb()
+    const stmt = db.prepare('UPDATE connections SET sort_order = ?, group_id = ? WHERE id = ? AND user_id = ?')
+    const okGroup = (g) => g === null || !!db.prepare('SELECT 1 FROM connection_groups WHERE id = ? AND user_id = ?').get(g, uid(request))
+    db.transaction(() => {
+      for (const it of items) {
+        const g = it.group_id ?? null
+        if (okGroup(g)) stmt.run(Number(it.sort_order) || 0, g, Number(it.id), uid(request))
       }
-    }
+    })()
+    return { ok: true }
+  })
 
-    if (!csvText) {
-      return reply.code(400).send({ error: 'Archivo CSV requerido' })
-    }
-
-    const rows = parseCSV(csvText)
-    if (rows.length === 0) {
-      return reply.code(400).send({ error: 'CSV vacío o sin filas de datos' })
-    }
+  // Body: { format: 'csv'|'ssh_config'|'filezilla', content: string }
+  fastify.post('/import', { bodyLimit: 5 * 1024 * 1024 }, async (request, reply) => {
+    const { format, content } = request.body || {}
+    if (typeof content !== 'string' || !content.trim()) return reply.code(400).send({ error: 'content required' })
+    let rows
+    try {
+      rows = format === 'ssh_config' ? parseSshConfig(content)
+        : format === 'filezilla' ? parseFileZilla(content)
+        : parseCSV(content)
+    } catch (e) { return reply.code(400).send({ error: `Could not parse file: ${e.message}` }) }
 
     const errors = []
-    const validRows = []
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i]
-      const err = validateCSVRow(row, i + 2) // +2 because row 1 is headers, data starts at 2
-      if (err) {
-        errors.push({ row: i + 2, error: err })
-      } else {
-        validRows.push(row)
-      }
-    }
-
-    if (validRows.length === 0) {
-      return reply.code(400).send({ error: 'Ninguna fila válida en el CSV', errors })
-    }
-
-    const db = getDb()
-    const stmt = db.prepare(`
-      INSERT INTO connections (user_id, name, type, host, port, username, password, private_key, passphrase,
-        root_path, bucket, region, endpoint, access_key, secret_key, color)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-
     let imported = 0
-    const tx = db.transaction(() => {
-      for (const row of validRows) {
-        const type = row.type.toLowerCase()
-        const authMethod = (row.auth_method || '').toLowerCase()
-        // For publickey auth, store null password (system key will be used automatically)
-        const password = authMethod === 'publickey' ? null : (row.password || null)
-
-        stmt.run(
-          request.user.id,
-          row.name.trim(),
-          type,
-          row.host?.trim() || null,
-          row.port ? Number(row.port) : null,
-          row.username?.trim() || null,
-          encrypt(password),
-          encrypt(row.private_key || null),
-          encrypt(row.passphrase || null),
-          row.root_path?.trim() || '/',
-          row.bucket?.trim() || null,
-          row.region?.trim() || 'us-east-1',
-          row.endpoint?.trim() || null,
-          encrypt(row.access_key || null),
-          encrypt(row.secret_key || null),
-          row.color?.trim() || '#6366f1'
-        )
-        imported++
-      }
-    })
-    tx()
-
-    auditLog(request.user.id, 'connections_import', {
-      imported,
-      failed: errors.length,
-      ip: request.clientIp,
-    })
-
+    const db = getDb()
+    db.transaction(() => {
+      rows.forEach((row, i) => {
+        try {
+          const group_id = ensureGroupPath(uid(request), row.group)
+          const { group, ...fields } = row
+          const data = normalize({ ...fields, group_id }, uid(request))
+          if (!data.type) throw bad('Missing type')
+          data.port ??= DEFAULT_PORTS[data.type] ?? null
+          insertConnection(uid(request), data)
+          imported++
+        } catch (e) { errors.push({ row: i + 1, name: row.name, error: e.message }) }
+      })
+    })()
+    auditLog(uid(request), 'connections_import', { ip: request.ip, format, imported, failed: errors.length })
     return { imported, failed: errors.length, errors }
   })
 }
