@@ -1,0 +1,45 @@
+appId: com.codefromhere.app
+productName: CodeFromHere
+copyright: MIT License
+directories:
+  output: release
+  buildResources: desktop/build
+files:
+  - package.json
+  - server.js
+  - src/**
+  - dist/ui/**
+  - desktop/main.cjs
+  - desktop/preload.cjs
+  - "!**/*.map"
+  - "!**/test/**"
+# Native binaries (node-pty) cannot run from inside the asar archive.
+asarUnpack:
+  - node_modules/node-pty/**
+# node-pty is N-API and the database is the built-in node:sqlite: nothing to rebuild.
+npmRebuild: false
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  hardenedRuntime: true
+  entitlements: desktop/build/entitlements.mac.plist
+  entitlementsInherit: desktop/build/entitlements.mac.plist
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+linux:
+  category: Development
+  target: [AppImage, deb]
+  maintainer: CodeFromHere
+publish:
+  provider: github
+  owner: palmereta
+  repo: CodeFromHere

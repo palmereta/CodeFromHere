@@ -1,0 +1,12 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      aws: { patterns: ['@aws-sdk/*'] }
+      fastify: { patterns: ['fastify', '@fastify/*'] }
+      xterm: { patterns: ['@xterm/*'] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: monthly }
